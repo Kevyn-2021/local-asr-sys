@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 部署运行时到 ThinkPad 并重启 Web 服务（v2.19：纳入 CLI 配套文件，避免再漂移）
-# 用法: bash scripts/deploy_webui.sh
+# 用法: bash deploy_webui.sh
+#       ASR_REMOTE_HOST=kevin@<IP> bash deploy_webui.sh   # ThinkPad 换了网络/地址时覆盖
 set -euo pipefail
 
-REMOTE_HOST="kevin@192.168.3.203"
+REMOTE_HOST="${ASR_REMOTE_HOST:-kevin@10.44.21.23}"
 REMOTE_ROOT="/home/kevin/asr_sys_local/asr-local"
 LOCAL_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
