@@ -27,15 +27,21 @@
 
 ## 目录结构
 
+仓库目录与运行节点（ThinkPad）生产布局**完全一致**：一级目录 `asr_sys_local/`（工程总目录）下，代码集中在 `asr-local/`，数据目录 `audio_inbox/` / `audio_archive/` 以占位文件保留结构（内容属个人数据，不入库）。
+
 ```
-├── config/          # 全局配置（路径、阈值、模型参数）
-├── scripts/         # 入口程序（Web 界面、批量处理、CLI 工具）
-├── src/             # 核心模块（VAD / 说话人分离 / 声纹 / ASR / 数据库 / 归档）
-├── src/utils/       # 通用工具（音频 IO、时间戳、哈希）
-├── systemd/         # 系统服务单元（可选，常驻运行）
-├── run.sh           # CLI 主菜单启动器
-├── deploy_webui.sh  # 部署脚本：同步代码到运行节点并重启服务
-└── requirements.txt
+asr_sys_local/                # 工程总目录（= git 仓库根，与运行节点 /home/kevin/asr_sys_local 一致）
+├── asr-local/                # 代码目录（= 部署源）
+│   ├── config/               # 全局配置（路径、阈值、模型参数）
+│   ├── scripts/              # 入口程序（Web 界面、批量处理、CLI 工具、模型下载）
+│   ├── src/                  # 核心模块（VAD / 说话人分离 / 声纹 / ASR / 数据库 / 归档）
+│   ├── src/utils/            # 通用工具（音频 IO、时间戳、哈希）
+│   ├── systemd/              # 系统服务单元（可选，常驻运行）
+│   ├── run.sh                # CLI 主菜单启动器
+│   ├── deploy_webui.sh       # 部署脚本：同步代码到运行节点并重启服务
+│   └── requirements.txt
+├── audio_inbox/              # 数据：收件箱（放入待处理音频；内容不入库）
+└── audio_archive/            # 数据：归档音频 / 文本备份 / 数据库（内容不入库）
 ```
 
 ## 快速开始

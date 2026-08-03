@@ -476,22 +476,24 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
 
 ### 4.8 工程组织与部署
 
-- **工程目录平铺（v2.22）**：工程从"部署源套壳"（`scripts/pkg_staging/`）平铺为单层——**工程根 = git 仓库根 = 部署源**，与 ThinkPad 生产布局（`asr-local/` 平铺）一致：
+- **目录结构对齐生产（v2.26）**：工程从"代码平铺根"调整为与 ThinkPad 生产布局**完全一致**的包裹结构——git 仓库根 = 工程总目录 `asr_sys_local/`，代码位于 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以 `.gitkeep` 占位随仓库保留（内容属个人数据，不入库）。MacBook 工程根 = git 仓库根 = 部署源 = 运行节点布局，四方一致：
 
   ```
-  ASR-Local-Thinkpad/            （= git 仓库根 = 部署源）
-  ├── config/        # 全局配置
-  ├── scripts/       # 入口程序（webui / process_inbox / CLI 工具 / 模型下载）
-  ├── src/           # 核心模块（VAD / 说话人分离 / 声纹 / ASR / 数据库 / 归档）
-  ├── src/utils/     # 通用工具（音频 IO / 时间戳 / 哈希）
-  ├── systemd/       # 系统服务单元
-  ├── run.sh         # CLI 主菜单
-  ├── deploy_webui.sh# 部署脚本（LOCAL_ROOT = 工程根）
-  ├── README.md      # 项目说明（强调本地运行、数据不出本机）
-  └── requirements.txt
+  asr_sys_local/                （= git 仓库根 = 工程总目录，与运行节点 /home/kevin/asr_sys_local 一致）
+  ├── asr-local/                （= 部署源，含全部代码）
+  │   ├── config/        # 全局配置
+  │   ├── scripts/       # 入口程序（webui / process_inbox / CLI 工具 / 模型下载）
+  │   ├── src/           # 核心模块（VAD / 说话人分离 / 声纹 / ASR / 数据库 / 归档）
+  │   ├── src/utils/     # 通用工具（音频 IO / 时间戳 / 哈希）
+  │   ├── systemd/       # 系统服务单元
+  │   ├── run.sh         # CLI 主菜单（PROJ_ROOT = asr-local）
+  │   ├── deploy_webui.sh# 部署脚本（LOCAL_ROOT = asr-local）
+  │   ├── README.md / PRD / TDD / requirements.txt
+  ├── audio_inbox/       # 数据：收件箱（.gitkeep 占位，内容不入库）
+  └── audio_archive/     # 数据：归档与数据库（.gitkeep 占位，内容不入库）
   ```
 
-  `deploy_webui.sh` 的 `LOCAL_ROOT` 由 `$(dirname "$0")/pkg_staging` 改为 `$(dirname "$0")`。
+  `deploy_webui.sh` 的 `LOCAL_ROOT` 基于脚本自身位置（`$(dirname "$0")`），随代码整体移入 `asr-local/` 后自动指向部署源根；`REMOTE_ROOT` 硬编码 `/home/kevin/asr_sys_local/asr-local`，两端目标一致，部署逻辑无需改动。
 - **run.sh 工程根路径 bug（v2.22 修复）**：`PROJ_ROOT` 原用 `$(cd "$SCRIPT_DIR/.." && pwd)` 多退一层——run.sh 位于工程根时 `..` 指向父目录（ThinkPad 上为 `asr_sys_local` 而非 `asr-local`），导致 `.venv`/`.hf_token` 定位错误、run.sh 实际不可用。改为 `$(cd "$SCRIPT_DIR" && pwd)`（run.sh 与工程根同层）。
 - **GitHub 版本管理（v2.22）**：工程已托管至公开仓库 `Kevyn-2021/local-asr-sys`。MacBook 为**唯一 git 源**；`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型权重/`sample_audio`）；**ThinkPad 不纳入 git**（含机密与运行资产），继续由 `deploy_webui.sh` 同步代码，两者各司其职。
 - **部署地址可配置（v2.23）**：ThinkPad 常随使用场景切换网络（家 `192.168.3.x` / 办公室 `10.44.x.x`），`deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<IP>` 环境变量覆盖（默认当前地址 `kevin@10.44.21.23`）。v2.23 部署验证：平铺重构后 MacBook 与 ThinkPad **18 个运行时文件 md5 全量一致**，`run.sh` 的 `PROJ_ROOT` 修复在运行节点生效（`/home/kevin/asr_sys_local/asr-local`）。
@@ -596,6 +598,7 @@ MEMORY_CONFIG = {
 | v2.22 | 2026-08-03 | **工程平铺重构 + GitHub 版本管理**: ① 目录平铺——`scripts/pkg_staging/` 套壳上提为单层工程根（config/scripts/src/systemd/run.sh/deploy_webui.sh），工程根 = git 仓库根 = 部署源，与 ThinkPad 生产布局一致（§4.8）；② 修复 `run.sh` 的 `PROJ_ROOT` 多退一层 bug（`SCRIPT_DIR/..` → `SCRIPT_DIR`，run.sh 与工程根同层），此前该 bug 使 run.sh 实际不可用（§4.8）；③ 修复 `deploy_webui.sh` 的 `LOCAL_ROOT`（去掉 `pkg_staging` 段）（§4.8）；④ 新增 GitHub 公开仓库 `Kevyn-2021/local-asr-sys`，`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型/`sample_audio`），MacBook 为唯一 git 源、ThinkPad 不纳入 git 继续 deploy 同步（§4.8）；⑤ 新增 README（强调本地运行、完全离线、数据不出本机） |
 | v2.23 | 2026-08-03 | **部署地址可配置 + 部署验证**: ① `deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<IP>` 环境变量覆盖（默认当前地址），ThinkPad 随家/办公室切换网络时无需改脚本（§4.8）；② 平铺重构后重新部署验证——MacBook 与 ThinkPad 18 个运行时文件 md5 全量一致、服务 active、`run.sh` PROJ_ROOT 修复在运行节点生效（§4.8） |
 | v2.25 | 2026-08-03 | **声纹阈值调低 + WebUI 流程面板输入/产出分行**: ① `VOICEPRINT_CONFIG` 三档阈值自 0.75/0.60 调低为 **0.65/0.50**（§3.3）——同一声纹跨录音相似度可能略低于 0.75 导致未自动关联，调低后提高自动关联成功率，误关联可由「校准已标注」（PRD FR-003-CLUSTER v2.20）手工改回；② WebUI「音频处理流程」面板 `.pipe-io` 改为纵向布局（输入/产出各占一行），输入格式列表按 `_FORMAT_PRIORITY` 优先级排序为 `wav / flac / m4a / mp3 / opus / ogg / webm`（§1.5） |
+| v2.26 | 2026-08-03 | **目录结构对齐生产布局**: ① git 仓库根由"代码平铺根"调整为与运行节点 `/home/kevin/asr_sys_local` **完全一致**的包裹结构——代码整体移入 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以 `.gitkeep` 占位随仓库保留（内容不入库；`.gitignore` 原整目录忽略改为 `目录/*` + `!目录/.gitkeep` negate 规则）（§4.8）；② `deploy_webui.sh` 的 `LOCAL_ROOT` 随脚本自定位自动指向新根、`REMOTE_ROOT` 硬编码不变，部署逻辑无需改动（§4.8）；③ README 目录树同步为包裹结构；④ ThinkPad 生产布局本就如此，无物理改动，仅重新部署验证 |
 
 ---
 

@@ -23,9 +23,13 @@ model_cache/
 *.pth
 
 # ===== 个人音频与数据（隐私，禁止入库） =====
-sample_audio/
-audio_inbox/
-audio_archive/
+# 数据目录结构随仓库保留（.gitkeep 占位），内容一律不入库
+sample_audio/*
+!sample_audio/.gitkeep
+audio_inbox/*
+!audio_inbox/.gitkeep
+audio_archive/*
+!audio_archive/.gitkeep
 *.wav
 *.mp3
 *.m4a
