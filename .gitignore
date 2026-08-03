@@ -1,0 +1,38 @@
+# ===== macOS =====
+.DS_Store
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ===== 密钥与环境配置（本地机密，禁止入库） =====
+.env
+.hf_token
+*.local
+
+# ===== 模型权重（体积大 + 许可限制，自行下载） =====
+models/
+model_cache/
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# ===== 个人音频与数据（隐私，禁止入库） =====
+sample_audio/
+audio_inbox/
+audio_archive/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.opus
+*.webm
+*.aac
+*.db
+*.log

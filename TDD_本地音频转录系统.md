@@ -1,0 +1,579 @@
+# 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
+
+**版本**: v1.5  
+**日期**: 2026-08-03  
+**状态**: 持续更新
+
+> **===== 文档分工说明（请先阅读）=====**
+> 
+> **本文档的角色**：技术设计文档（TDD），聚焦"如何实现"——技术架构、模型选型、工程实现细节、踩坑记录、配置参考、变更日志。它回答"系统怎么建"。
+> 
+> **配套文档**：产品的需求定义（功能需求、非功能需求、UI 设计、数据模型）见另一份文档 [PRD_本地音频转录系统.md](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/PRD_本地音频转录系统.md)。
+> 
+> **内容不重复原则**：TDD 与 PRD 的内容互不重复。同样的内容只会在一个文档中出现，不会同时出现在两份文档中。两文档通过相互索引引用，而非复制粘贴。这样做的目的是：避免同一内容在多处维护，因漏改某处而导致不一致。
+> 
+> **写入新内容前请确认**：先判断内容属于"需求定义"还是"工程实现"，分别写入对应文档。如需引用对方文档的内容，使用链接索引而非重复描述。
+
+---
+
+## 1. 技术架构
+
+### 1.1 架构总览
+
+用户交互层 → 处理流水线 → 数据层，状态机在交互层与流水线之间串联。
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     用户交互层                               │
+│   手动处理 (process_inbox.py)   CLI (run.sh)   Web 看板      │
+│   └─ 看板按钮触发·递归扫描       └─ 单次处理      └─ 4 页    │
+│            │                            │            ▲      │
+│            │  触发 process_file()        │            │      │
+│            └──────────────┬─────────────┘            │      │
+│                           │                          │      │
+│            状态上报 (status.json) ────────────────────┘      │
+│            process_inbox 写 state/stage/pending；webui 读取  │
+├───────────────────────────┼─────────────────────────────────┤
+│                     处理流水线 (AsrPipeline)                  │
+│  输入预处理 → VAD → 说话人分离 → 声纹匹配 → ASR → 时间戳    │
+│  各阶段串行加载/卸载模型 (§3.2 内存编排)                      │
+├───────────────────────────┼─────────────────────────────────┤
+│                     数据层                                    │
+│   SQLite transcripts.db                                      │
+│   ├─ transcripts        片段：时间戳 + 说话人 + 文字          │
+│   ├─ voiceprints        命名声纹库（声纹向量）                │
+│   ├─ speaker_clusters   声纹簇·标注学习                       │
+│   ├─ persons            人物档案                              │
+│   └─ transcripts_fts/fts2  全文索引                           │
+│   文本备份 text_backups/   音频归档 processed_audio/          │
+│   status.json             日志 pipeline.log                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 处理流程（串行）
+
+每个音频文件依次经过 6 个阶段，全部完成后才处理下一个文件：
+
+1. **加载音频** → 2. **VAD 语音检测** → 3. **说话人分离** → 4. **声纹匹配** → 5. **ASR 转录** → 6. **归档与入库**
+
+> 串行原因：模型按阶段加载/卸载，避免同时加载多个模型导致内存超限。
+
+### 1.3 状态机
+
+WebUI 顶部状态带显示 3 态，由 `derive_state()` 按以下优先级推导：
+
+| 优先级 | 条件 | 判定状态 |
+|--------|------|---------|
+| 1 | 锁文件存在 | **处理中** |
+| 2 | `last_launched_at` 在 5 分钟内 + `state=processing` | **处理中** |
+| 3 | `last_launched_at` 在 5 分钟内 + `state=idle` + `last_result=failed` | **处理失败** |
+| 4 | `last_launched_at` 在 5 分钟内 + `state=idle` | **空闲** |
+| 5 | `state=processing` 且更新在 5 分钟内 | **处理中**（兜底） |
+| 6 | `state=idle` + `last_result=failed` | **处理失败** |
+| 7 | `state=idle` | **空闲** |
+| 8 | 其余按 `status.json` 返回 | — |
+
+> v2.12 精简说明：原 5 态（已停止/空闲/排队中/处理中/处理失败）中的"已停止"和"排队中"从未实际出现——手动触发模式下 `_write_status_prelaunch()` 和 `main()` 始终直接写 `state=processing`，无代码路径产生 `queued`；`已停止` 原为异常退出残留兜底，当前状态机已通过锁文件 + 5 分钟超时覆盖该场景。
+
+**状态数据流转**：
+- `process_inbox.py`：获取锁 → 写 `state=processing` → 0.5s 延迟确保持久化 → 循环内全程保持 processing → 循环外统一写 idle → finally 释放锁
+- WebUI 预启动（`_write_status_prelaunch()`）：启动子进程前立即写 `state=processing` + `last_launched_at`，防止子进程启动延迟期间 WebUI 误判为"空闲"
+
+### 1.4 进度时间戳追踪
+
+`process_inbox.py` 的 `_status()` 函数在处理过程中自动记录两个时间戳，供 WebUI 进度面板展示：
+
+| 字段 | 写入时机 | 清除时机 |
+|------|---------|---------|
+| `processing_start_time` | 首次写入 `state=processing` 时（当前次处理中尚未有此字段） | `state=idle` 时设为 `None` |
+| `stage_start_time` | `stage` 字段变化时（新值与 `status.json` 中已有值不同） | `state=idle` 时设为 `None` |
+
+**实现逻辑**（`process_inbox.py` 的 `_status()` 函数）：
+
+```python
+def _status(**kw):
+    data = {}
+    try:
+        data = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    # 进度时间戳追踪
+    new_state = kw.get("state")
+    if new_state == "processing" and not data.get("processing_start_time"):
+        kw["processing_start_time"] = datetime.now().isoformat()
+    elif new_state == "idle":
+        kw["processing_start_time"] = None
+        kw["stage_start_time"] = None
+
+    new_stage = kw.get("stage")
+    if new_stage and new_stage != data.get("stage"):
+        kw["stage_start_time"] = datetime.now().isoformat()
+
+    data.update(kw)
+    data["updated_at"] = datetime.now().isoformat()
+    STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+```
+
+> **坑（v2.19）**：写入判断不能写成 `"processing_start_time" not in data`——空闲清理时该键**已存在但值为 `None`**，下次任务启动时 `not in data` 为 False 导致不写入，WebUI 进度表格"总任务"行永远空白。必须判断**值为空**（`not data.get(...)`）才写入。
+
+WebUI 通过 `read_status()` 读取这些字段，计算已耗时并渲染进度面板。
+
+**进度面板（v2.18 起为 3 行 3 列表格）**，仅处理中显示：
+
+| 任务 | 起始时间 | 耗时 |
+|------|---------|------|
+| 总任务 | `processing_start_time`（黑色） | 总耗时（赭红） |
+| 当前步骤·{stage} | `stage_start_time`（黑色） | 当前步骤耗时（暖赭） |
+
+- 起始时间用 `fmt_full_time()` 显示完整 `YYYY-MM-DD HH:MM:SS`
+- 耗时用 `fmt_elapsed()` 计算「现在 − 起始时间」
+- 概览页处理中/失败时每 **15 秒**自动刷新（v2.18 由 5 秒放宽），空闲时每 10 分钟
+
+详见 [PRD §8.2 页 1 线框图](./PRD_本地音频转录系统.md#82-系统看板布局ui-v20)。
+
+### 1.5 标注声纹计数逻辑
+
+WebUI「处理成果」面板中"标注声纹"数字的统计口径：
+
+```sql
+SELECT COUNT(DISTINCT assigned_name) FROM speaker_clusters WHERE assigned_name IS NOT NULL
+```
+
+**为什么用 `DISTINCT`**：多个 `unknown_XXXX` 编号可能标注为同一个人（如 unknown_0001/0002/0003 都标注为 KevinZH），此时标注声纹数应为 1（按唯一姓名），而非 3（按簇数）。
+
+### 1.6 人物档案与声纹关联
+
+`list_persons()` 查询自动判断每个人物是否已有声纹簇标注，通过 `EXISTS` 子查询关联 `speaker_clusters.assigned_name`：
+
+```sql
+SELECT p.person_name, p.gender, p.birth_year, p.relation, p.note, p.created_at,
+       CASE WHEN EXISTS (SELECT 1 FROM speaker_clusters sc
+                         WHERE sc.assigned_name = p.person_name)
+            THEN 1 ELSE 0 END AS has_voiceprint
+FROM persons p ORDER BY p.created_at
+```
+
+WebUI 人物档案面板将 `has_voiceprint` 映射为"是/否"显示，用户可一眼看出哪些人已标注声纹、哪些尚未标注。
+
+**标注回填不覆盖已有档案（v2.19）**：声纹簇面板「确认标注并回填」时，若 `persons` 表中已存在该姓名（用户填过资料），**不能**再调用只传姓名的 `upsert_person()`——其 `ON CONFLICT DO UPDATE` 会把未传字段覆盖为 NULL，导致"标注后档案只剩姓名"。必须先 `get_person()` 判断：仅当档案不存在时才自动建档。
+
+### 1.7 声纹簇标注校准（v2.20）
+
+自动标注可能出错，用户需能手工纠正。三种操作（标注为某人 / 改标他人 / 改回未知）统一走 webui.py 的 `apply_cluster_label(cluster_id, target)`：
+
+```python
+def apply_cluster_label(cluster_id, target):
+    old_label = get_cluster_label(cluster_id) or ""          # 簇身份，永不改变
+    old_name = (list_clusters_view 中该簇的 assigned_name) or None
+    match_from = old_name if old_name else old_label         # transcripts 中当前存在形式
+    if target:                                               # 标注 / 改标
+        assign_cluster_name(cluster_id, target)
+        if get_person(target) is None: upsert_person(target) # 已有档案不清空
+        target_text = target
+    else:                                                    # 改回未知
+        unassign_cluster_name(cluster_id)                    # assigned_name=NULL
+        target_text = old_label                              # 回填到原编号
+    update_transcripts_speaker(match_from, target_text)
+    update_txt_files_speaker(match_from, target_text)
+```
+
+**关键设计（可逆性）**：
+- **`label`（unknown_XXXX）是簇的稳定身份，永不改变**。改回未知时沿用原编号，不产生新编号——因此"标注 → 改回 → 再标注"全程可逆，无需新编号，也不会编号错乱（编号全局递增不复用，见 §4.5 与 PRD FR-003-CLUSTER）。
+- **回填匹配串的选择**：簇从未标注过 → transcripts 中记录是 `label`（pipeline 写入），匹配 `label`；已标注过 → 记录已被回填为姓名，匹配**姓名**。改回时用 `old_name` 匹配、回填到 `label`。
+- **边界说明**：若同一姓名被标到多个簇，改回/改标会按姓名全局替换（UI 已提示"该姓名的记录将改回编号"）——属合理近似，用户可随后逐个再标注。
+
+**UI（「声纹簇·标注学习」面板，v2.20）**：
+- 顶部表格列出**全部簇**（ID / 编号 / 标注为 / 学习样本数），标注列显示姓名或"（未标注）"
+- `st.tabs` 两个操作区：①「✏️ 标注为某人」——未标注编号 → 姓名（原「确认标注并回填」）；②「🔧 校准已标注」——改标为他人，或「改回未知（沿用编号 {label}）」
+- 改回未知为**两步确认**（`st.session_state["unassign_cid"]`）：首次点击仅记录待确认簇 ID 并显示警告，再次点「确认改回」才执行，防误操作
+
+---
+
+## 2. 模型选型与部署
+
+### 2.1 模型清单
+
+| 模型 | 大小 | 运行时内存 | 来源 | 本机 (CPU) 速度 |
+|------|------|------|------|----------------|
+| Silero VAD (snakers4/silero-vad) | ~1MB | ~200MB | GitHub | >100× 实时 |
+| PyAnnote Diarization 3.1 (PyAnnote 4.x 库) | ~11MB | ~1-2GB | HuggingFace | ~2-3× 实时 |
+| PyAnnote Embedding (声纹) | ~98MB | ~200MB | HuggingFace | 秒级 |
+| Qwen3-ASR-0.6B | ~1.5GB | ~3GB | HuggingFace / ModelScope | ~0.5× 实时 |
+
+> 不采用 Qwen3-ASR-1.7B：~6GB 内存 + 速度减半，超出本机 (16GB/无独显) 性价比。
+
+### 2.2 模型存储路径
+
+所有模型权重存储在 `/home/kevin/asr_sys_local/asr-local/models/`，通过 `HF_HOME` 环境变量统一指向，避免写入 `~/.cache/huggingface/`。
+
+模型加载优先使用 `local_files_only=True` 检查本地目录，缺失时才允许联网下载。
+
+### 2.3 模型加载超时机制
+
+**模型加载阶段**设置 300 秒（5 分钟）超时。v2.17 起模型完全离线（本地缓存），加载耗时一般数秒至数分钟，300 秒足够宽裕、不会误杀正常加载；同时防止本地缓存损坏/磁盘异常时无限等待（避免干等）。超时后抛出 `PipelineError`，被 `process_file` 的异常处理捕获，写入 `state="idle"` + `last_result="failed"` 后退出。
+
+> **超时 Review 结论（v2.17）**：自动超时只保留在「模型加载」阶段（耗时可预期，300s 不会误杀）；「处理执行」阶段（VAD / 说话人分离 / 声纹 / ASR 推理）**不设任何自动超时**——处理耗时与音频时长成正比，超时设短误杀正常长音频、设长等于干等。处理阶段挂死由外部监控（每 10 分钟状态检查）与人工介入兜底，见 §3.2。
+
+### 2.4 内存编排
+
+流水线按阶段串行加载、用完即卸，峰值内存控制在 <6GB：
+
+- 完成 Diarization 后卸载其模型，再加载 ASR 模型
+- 每个音频处理结束后强制 GC（`gc.collect()`）
+- 模型常驻/卸载策略可在 `MEMORY_CONFIG` 中调整
+
+---
+
+## 3. 各模块实现细节
+
+### 3.1 VAD — Silero VAD
+
+#### 选型背景
+从 PyAnnote segmentation-3.0 VAD 模式切换为 Silero VAD，原因：
+- Silero VAD 更轻量（~1MB vs ~80MB），加载速度更快
+- 纯 VAD 任务上效果优于 PyAnnote 的 VAD 模式
+- 通过代理可正常从 GitHub 下载
+
+#### 加载方式
+通过 `torch.hub.load()` 加载，缓存目录设为 `MODELS_DIR / "silero-vad"`。
+
+```python
+torch.hub.set_dir(str(SILERO_CACHE_DIR))
+self._model, self._utils = torch.hub.load(
+    repo_or_dir="snakers4/silero-vad",
+    model="silero_vad",
+    source="github",
+    trust_repo=True,
+)
+(self._get_speech_ts, self._get_speech_ts_adaptive) = (
+    self._utils[0], self._utils[1]
+)
+```
+
+#### ⚠️ 关键踩坑：`get_speech_timestamps` 参数顺序
+
+```python
+# Silero VAD 的 get_speech_timestamps 函数签名：
+def get_speech_timestamps(
+    audio,                    # 位置参数 #1
+    model,                    # 位置参数 #2
+    threshold=0.5,            # 位置参数 #3 ← 注意！
+    sampling_rate=16000,      # 关键字参数
+    min_speech_duration_ms=250,
+    ...
+)
+```
+
+**错误用法**（第三个位置传 `sr`，被当作 `threshold=16000`，与后面 `threshold=0.5` 冲突）：
+
+```python
+self._get_speech_ts(wav, self._model, sr, threshold=0.5, ...)
+#                                               ↑
+#                          "multiple values for argument 'threshold'"
+```
+
+**正确用法**（`sr` 必须作为 `sampling_rate` 关键字参数传入）：
+
+```python
+self._get_speech_ts(
+    wav,
+    self._model,
+    threshold=0.5,
+    sampling_rate=sr,         # ← 关键字参数，不占 threshold 位置
+    min_speech_duration_ms=...,
+    ...
+)
+```
+
+#### 输出格式
+
+Silero VAD 返回字典列表，**`start`/`end` 是采样点（sample），不是毫秒**（`return_seconds=False` 为默认）：
+
+```python
+[{"start": 7040, "end": 54400}, ...]  # 采样点（16kHz 下 1 秒 = 16000 采样点）
+```
+
+在 `detect()` 中转为秒——**必须除以采样率**：
+
+```python
+start_s = seg["start"] / sr   # 采样点 → 秒（v2.18 修复：除以采样率，不是 /1000）
+end_s = seg["end"] / sr
+```
+
+> **踩坑（v2.18）**：旧代码误将采样点当毫秒（`/ 1000.0`），16kHz 下时间被放大 16 倍——6 秒音频检测出 0~100 秒的语音段，导致 VAD 与 Diarization 段**永远交集失败**，报"无有效语音段，已跳过"。
+
+#### 离线加载（v2.17）
+- 加载逻辑改为**离线优先**：本地缓存仓库 `MODELS_DIR/silero-vad/snakers4_silero-vad_master` 存在时，用 `torch.hub.load(repo_or_dir=<本地路径>, source="local")` **完全离线加载**，不与 GitHub 交互
+- 仅当本地缓存缺失时才回退 `source="github"` 联网下载一次
+- 依赖的权重文件 `src/silero_vad/data/silero_vad.jit` 已下载到本地缓存，运行时无需联网
+
+#### 踩坑记录（v2.16）
+
+- **模型权重缺失导致假网络错误**：Silero VAD 的 `files/` 目录缺少 `silero_vad.jit`（约 1.8MB）时，`torch.hub.load` 每次都会联网下载，网络不通时报 `Remote end closed connection without response`，误以为只是网络问题。修复：带代理下载补齐模型权重（实际路径为 `MODELS_DIR/silero-vad/snakers4_silero-vad_master/src/silero_vad/data/silero_vad.jit`）。
+- **torch 2.13 hub 下载 bug**：`torch.hub.load(source='github')` 在 `_validate_not_a_forked_repo()` 中对无 `Authorization` 头的请求执行 `del headers["Authorization"]` 抛 `KeyError`。绕过方式：仓库已在本地时改用 `source='local'` 传入本地路径，或在有代理时直接 `hf_hub`/手动下载权重文件。
+- **缓存命中无需联网**：仓库（`snakers4_silero-vad_master`）与权重均缓存完整后，`source='github' + force_reload=False` 直接命中缓存（日志显示 `Using cache found in ...`），无需联网。
+
+### 3.2 Diarization — PyAnnote Speaker Diarization 3.1
+
+#### 版本兼容（v2.16 修复）
+- PyAnnote 4.x 与 3.x 存在 API 差异：`use_auth_token` → `token`、返回 `DiarizeOutput` 对象需取其 `.speaker_diarization` 属性
+- **踩坑（v2.16）**：pyannote 4.0.7 的 `pipeline()` 返回 `DiarizeOutput` dataclass（字段含 `speaker_diarization: Annotation`），不是 Annotation 对象，直接调用 `.itertracks()` 会报 `'DiarizeOutput' object has no attribute 'itertracks'`。代码中已做兼容：`if hasattr(anno, "speaker_diarization"): anno = anno.speaker_diarization`
+- **踩坑（v2.16）**：pyannote 4.x 的 `Pipeline.from_pretrained()` **不支持 `local_files_only` 参数**（会抛 TypeError）。离线优先需改用 `HF_HUB_OFFLINE=1` 环境变量
+- **踩坑（v2.16）**：`pyannote/wespeaker-voxceleb-resnet34-LM` 的 `pytorch_model.bin` 必须在本地缓存（约 26MB），缺失时 pipeline 加载会联网下载，网络不通则加载失败
+
+#### 性能
+i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟。
+> 实测修正（v2.16）：长音频（>= 10 分钟）在子进程隔离模式下实际接近 **1 倍实时**（15.3 分钟音频耗时 > 15 分钟），短音频在主进程内约 2~3 倍实时。
+
+#### 安全机制（v2.15 + v2.17 修订）
+针对说话人分离阶段曾出现的进程崩溃/挂死问题，实施防护：
+
+1. **子进程隔离**：长音频（>= 10 分钟）的 pipeline 推理在独立子进程中运行，OOM 或段错误只杀死子进程，主进程存活并上报错误。短音频（< 10 分钟）仍在主进程内直接运行以降低开销。
+2. **崩溃检测**：检查子进程退出码，`-9`（SIGKILL）报告 OOM，`-11`（SIGSEGV）报告段错误，提供针对性建议。
+3. **离线优先加载**：`_load_pipeline()` 先设 `HF_HUB_OFFLINE=1` 离线加载本地缓存，失败才回退联网，避免网络波动导致加载卡住。
+4. **不设自动超时（v2.17 决策）**：曾尝试动态超时（v2.15: 600s+300s/10min → v2.16: 1200s+900s/10min），实测均不合理——超时设短会**误杀**接近 1 倍实时的正常长音频，设长则等于**干等**。最终决定移除全部自动超时（子进程无限 `join()`），改为**外部监控兜底**：每 10 分钟状态检查任务 + 用户主动发现异常后由 AI 检查进程。真·挂死不再依赖自动化超时终止。
+
+实现细节：
+- 子进程通过 `multiprocessing.Process` + `spawn` 上下文启动
+- 音频通过文件路径（而非 tensor）传递，避免大 tensor 序列化开销
+- 子进程内独立加载 PyAnnote Pipeline 模型，执行推理后将结果通过 `Queue` 传回
+- 子进程异常退出（退出码非 0）由主进程感知并上报；挂死由外部监控发现
+
+详见 [diarization.py](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/src/diarization.py)。
+
+### 3.3 声纹识别 — PyAnnote Embedding
+
+#### 匹配机制
+- 对每个 Diarization 输出的说话人，聚合全部片段提取声纹向量
+- 与声纹库逐一计算余弦相似度：
+  - `score >= 0.75` → 自动标注
+  - `0.60 <= score < 0.75` → 疑似待确认
+  - `score < 0.60` → 未识别，进入声纹簇流程
+
+声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_本地音频转录系统.md#fr-003-cluster-声纹簇持久化与标注学习)。
+
+### 3.4 ASR — Qwen3-ASR-0.6B
+
+#### 模型类与调用入口（v2.18 重构）
+- **模型类是 `AutoModelForMultimodalLM`**，不是 `AutoModelForSpeechSeq2Seq`——Qwen3-ASR 是语音-文本多模态模型（音频编码器 + Qwen LLM）
+- **输入必须通过 `processor.apply_transcription_request(audio=...)` 构建**（官方推荐入口，自动处理 chat-template 格式化）。手动拼 `input_features` 会缺文本侧 `input_ids`，报 `Audio features and audio tokens do not match`
+- **解码**：`processor.decode(generated_ids, return_format="transcription_only")` 直接得到纯转录文本（自动去掉 `language ...` 标签和 `<asr_text>` 标记）
+- 生成时 `max_new_tokens=512`；`generated_ids = generated[:, inputs["input_ids"].shape[1]:]` 截取新生成部分
+- 语言：`apply_transcription_request(audio=..., language=...)` 传 `zh` 强制中文，或 `None` 自动识别
+- `sampling_rate` 需放进 `processor_kwargs={"sampling_rate": sr}`（直接传会触发 warning）
+- 推理后端：Transformers（本地离线，FP32），不依赖 GPU/vLLM
+
+#### 离线加载（v2.18 修复）
+Qwen3-ASR 模型以**自定义解压目录**存放于 `MODELS_DIR/Qwen3-ASR-0.6B-hf/`（含 `config.json` / `model.safetensors` / `tokenizer.json` 等）。
+
+```python
+local_dir = MODELS_DIR / "Qwen3-ASR-0.6B-hf"
+if local_dir.exists():
+    # 完全离线：直接用本地目录加载（不再走 hub 缓存 / 联网）
+    self.processor = AutoProcessor.from_pretrained(str(local_dir), token=hf_token)
+    self.model = AutoModelForMultimodalLM.from_pretrained(str(local_dir), ...)
+else:
+    # 兜底：hub 缓存(local_files_only) → 联网
+    ...
+```
+
+> **踩坑（v2.18）**：`local_files_only=True + cache_dir` **只认 HF hub 缓存格式**（`models--Qwen--Qwen3-ASR-0.6B-hf/snapshots/...`），匹配不到自定义解压目录时会误判"本地缺失"→ 回退联网下载 → 无外网环境下失败（`Cannot send a request, as the client has been closed.` / `Network is unreachable`）。必须**先检查自定义目录是否存在**，存在则直接按本地路径加载。
+
+> **踩坑（v2.18）**：processor 返回的掩码键名是 `input_features_mask` 而非 `attention_mask`；generate 不传 `return_timestamps`/`language`（模型不支持会警告 "not used by the model"）。改为官方 `apply_transcription_request` 入口后这些细节由 processor 自动处理，无需手工拼参。
+
+#### ASR 文本清洗
+Qwen3-ASR 输出可能包含特殊 token（`<|system|>`、`<|user|>`、`<|assistant|>`、`<|endoftext|>` 等），在写入 TXT/JSON 前统一经 `_clean_asr_text()` 清洗：
+
+```python
+# 处理层次：
+# 1. 去除所有 <|...|> 和 |...| 格式的特殊 token
+t = re.sub(r'<\|?[a-z_]+\|?>', '', t)
+t = re.sub(r'\|[a-z_]+\|', '', t)
+# 2. 按行检测 role label，去除 system prompt 内容
+# 3. 去除行内残留的 role label
+# 4. 去除语言前缀（如 "language Chinese"）
+t = re.sub(r'\blanguage\s+[a-zA-Z]+', '', t, flags=re.IGNORECASE)
+# 5. 合并多余空白
+```
+
+> 注意：`\b` 词边界断言在中文前后不生效，`language Chinese` 中 `Chinese` 后面不能跟 `\b`。
+
+### 3.5 时间戳处理
+
+提取策略与计算公式见 [PRD FR-001-TS](./PRD_本地音频转录系统.md#fr-001-ts-录音开始时间提取-时间戳核心) 和 [PRD FR-005](./PRD_本地音频转录系统.md#fr-005-时间戳计算与存储-核心功能)；时区规则见 [PRD §7.2](./PRD_本地音频转录系统.md#72-时间戳格式规范)。
+
+#### 正则表达式
+```python
+# 主格式：分隔符支持横线和下划线混用
+r"(?P<Y>\d{4})[-_](?P<M>\d{2})[-_](?P<D>\d{2})[-_](?P<h>\d{2})[-_](?P<m>\d{2})[-_](?P<s>\d{2})"
+```
+
+### 3.6 错误处理
+
+失败处理逻辑与兄弟文件规则见 [PRD FR-001-AR](./PRD_本地音频转录系统.md#fr-001-ar-归档与有机重命名) 和 [PRD FR-001-MULTI](./PRD_本地音频转录系统.md#fr-001-multi-同名多格式文件处理)。
+
+```python
+def move_to_error(src: Path, reason: str = "") -> None:
+    """处理失败时，不移入 error/，只在 error/ 目录下生成 .error.txt 日志文件。
+    v2.17：文件名附加产生错误的时间戳 YYYYMMDD_HHMMSS，避免新旧批次错误同名混淆。"""
+    INBOX_ERROR_DIR.mkdir(parents=True, exist_ok=True)
+    if reason:
+        base = src.stem
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        note = INBOX_ERROR_DIR / f"{base}_{ts}.error.txt"
+        i = 2
+        while note.exists():
+            note = INBOX_ERROR_DIR / f"{base}_{ts}_{i}.error.txt"
+            i += 1
+        note.write_text(reason, encoding="utf-8")
+```
+
+#### 错误归档（v2.17 重构）
+
+- **共享函数** `src/archive.py::archive_error_files()`：将 `error/` 根目录所有 `.error.txt` 移入 `error/archived/`，文件名附加**原文件创建时间戳**（优先 statx btime，回退 mtime），彻底避免重名
+- **两个调用方复用同一函数**（避免逻辑重复）：
+  1. `process_inbox.py::_archive_old_errors()` — 每次处理开始前自动归档上一轮错误
+  2. `webui.py::prepare_inbox()` — 「准备处理收件箱」按钮，用户手动触发归档 + 解锁
+- **解锁逻辑**：仅当锁文件存在且**非处理中**（陈旧锁 > 6 小时）时删除；正在处理（新鲜锁）保留并提示
+
+---
+
+## 4. 工程经验与教训
+
+### 4.1 VAD 相关
+- **Silero VAD 参数顺序**（v2.9）：`get_speech_timestamps` 的第三个位置参数是 `threshold`，不是 `sampling_rate`。`sr` 必须作为 `sampling_rate=16000` 关键字参数传入，详见 §3.1。
+- **无有效语音段处理**：静音或噪音文件通过 VAD 后无有效语音段，移入 `error/` 目录并生成 `.error.txt` 说明原因。
+- **Silero 返回采样点而非毫秒（v2.18）**：`get_speech_timestamps` 默认 `return_seconds=False`，返回的 `start`/`end` 是采样点。16kHz 下必须 `/ sr` 转秒；误 `/ 1000` 会把时间放大 16 倍，导致 VAD 与 Diarization 交集永远为空 → "无有效语音段"。详见 §3.1。
+
+### 4.2 模型加载相关
+- **PyAnnote 版本兼容**：PyAnnote 4.x 与 3.x API 不同，需注意 `use_auth_token` → `token` 的变化。
+- **模型加载超时**：300 秒超时机制防止下载卡死，超时后强制终止并清理进程。
+- **网络问题**：模型加载可能因网络问题卡住，需通过超时机制强制终止。
+- **自定义目录 vs hub 缓存（v2.18）**：`local_files_only=True + cache_dir` 只认 HF hub 缓存格式（`models--org--name/snapshots/...`）。若模型以自定义解压目录存放（如 `models/Qwen3-ASR-0.6B-hf/`），会误判"本地缺失"→ 回退联网 → 无外网时失败。**必须先检查自定义目录是否存在，存在则直接按本地路径加载**（详见 §3.4）。
+- **Qwen3-ASR 是多模态模型（v2.18）**：模型类必须用 `AutoModelForMultimodalLM`（非 `AutoModelForSpeechSeq2Seq`），输入必须走 `processor.apply_transcription_request()` 官方入口——手动拼 `input_features` 会缺 `input_ids` 文本侧，报 `Audio features and audio tokens do not match`；`processor` 返回的掩码键是 `input_features_mask` 而非 `attention_mask`；generate 不支持 `return_timestamps`/`language` 参数。详见 §3.4。
+
+### 4.3 文本清洗相关
+- **正则陷阱**：Python 默认 UNICODE 模式下 `\w+` 匹配中文字符，`\b` 词边界在中文前后不生效。清洗 `language Chinese` 时不能使用 `\b` 作为尾部边界。
+
+### 4.4 文件处理相关
+- **文件创建时间**：跨平台拷贝后文件创建时间可能变为拷贝时刻，因此时间戳提取以文件名优先，不依赖文件系统元数据。
+- **文件名时间戳格式**：`YYYY-MM-DD_时_分_秒`，分隔符支持横线和下划线混用，正则使用 `[-_]` 通配分隔符。
+- **watchdog 已禁用**：因无法可靠检测子文件夹和拷贝过程中的竞态，改为手动触发处理。
+- **`Path.suffix` 陷阱（v2.17）**：`Path("a.error.txt").suffix` 只返回最后一个后缀 `.txt`，**不等于** `.error.txt`。用 `f.suffix != ".error.txt"` 判断永远为真，导致匹配不到任何文件。匹配复合后缀必须用 `f.name.endswith(".error.txt")`。`archive_error_files()` 与 `count_error_files()` 均因此失效过一次。
+
+### 4.5 数据库相关
+- **表结构初始化**：使用 `CREATE TABLE IF NOT EXISTS` 确保表结构存在而不覆盖数据。
+- **说话人标签更新**：标注后需同步更新 `transcripts` 表及 `text_backups/` 目录中的 TXT/JSON 文件。
+- **`upsert_person()` 覆盖语义（v2.19）**：`ON CONFLICT DO UPDATE` 会把**未传字段**覆盖为 NULL。标注回填若只传姓名，会清空已填的性别/出生年/关系/备注。必须先 `get_person()` 判断存在性，仅新建时才调用。详见 §1.6。
+- **`next_unknown_label()` 取全表 MAX（v2.19）**：不能基于"最后插入行"（`ORDER BY cluster_id DESC LIMIT 1`）——删除过编号较大的簇后，最后插入行的编号可能已被占用，INSERT 时 UNIQUE 冲突。改为扫描全部行取最大编号 +1。
+
+### 4.6 代理配置
+ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 GitHub 下载模型/依赖。
+
+### 4.7 WebUI 样式踩坑
+- **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
+
+### 4.8 工程组织与部署（v2.19 Review）
+- **默认路径制造残留目录（v2.21 根治）**：`settings.py` 的默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）只在 `.env` 未加载时生效；而代码里多处 `Path.mkdir(parents=True, exist_ok=True)` 会自动创建这些默认目录——`~/audio_archive`、`~/asr-local/model_cache` 因此各出现过一次并被清理。根源是 CLI 入口（`run.sh`）此前只读 `.hf_token`、不加载 `.env`。v2.21 起 `run.sh` 启动时 `source .env`（`set -a` 导出）并强制注入 `ASR_PROJ_ROOT`，CLI 与 WebUI 共用生产路径。**排查此类残留时看目录名是否为 settings 默认值 + 目录 mtime**。
+- **暂存区与生产区漂移**：MacBook 工程根目录（`ASR-Local-Thinkpad/`）是部署源，但 `deploy_webui.sh` 原先只部署 Web 相关文件，CLI 配套（`run_pipeline.py`/`enroll_voiceprint.py`/`step2_download_models.sh`/`run.sh`）未纳入部署，导致暂存区被改动后与 ThinkPad 生产版本漂移（`src.config.settings` 错误导入、`enroll_voiceprint.py` 中文引号 SyntaxError 等）。v2.19 起部署脚本纳入全部运行时（`config/settings.py` 除外），并新增远端 CLI 导入校验。
+- **一次性过程稿不进部署源**：`step1_setup.sh` 是初装期一次性脚本，路径停留在旧布局（`~/asr-local`、`~/audio_archive`、`model_cache`），不再匹配当前 `~/asr_sys_local/` + `models/` 布局，v2.19 删除；`systemd/asr-webui.service` 与 `install_services.sh` 的 .env 模板同步对齐生产路径（含"用户级 service 不含 User/Group 行"约束）。
+- **命名残留清理**：VAD 切换为 Silero 后遗留的 `PyAnnoteVad` 别名、`pipeline.py` 中混用的相对/绝对导入、`webui.py` 复制的 `AUDIO_EXTS`、`process_inbox.py` 重复定义的 `BJT`、`voiceprint.py` 未用的 `db_conn` 参数等一次性清理，保持单一事实来源（统一从 `config.settings` 导入、统一 `src.*` 绝对导入）。
+
+---
+
+## 5. 配置参考
+
+### 5.1 路径配置
+
+```python
+PROJ_ROOT = ~/asr-local                     # 代码目录
+INBOX_DIR = ~/audio_inbox                    # 收件箱
+ARCHIVE_DIR = ~/audio_archive                # 归档根目录
+MODELS_DIR = Path(os.environ.get("HF_HOME", PROJ_ROOT / "models"))
+DB_PATH = ARCHIVE_DIR / "transcripts.db"     # 数据库
+```
+
+### 5.2 音频格式
+
+```python
+SUPPORTED_EXTENSIONS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.webm'}
+FORMAT_PRIORITY = {
+    ".wav": 0, ".flac": 1, ".m4a": 2, ".mp3": 3,
+    ".opus": 4, ".ogg": 5, ".webm": 6,
+}
+```
+
+### 5.3 时间戳
+
+```python
+TIME_SOURCE_PRIORITY = ["filename", "file_birthtime"]
+TIME_SOURCE_MISMATCH_THRESHOLD = 300  # 5 分钟
+ORGANIC_OUTPUT_FORMAT = "absolute"     # absolute / relative / both
+TIMEZONE = "Asia/Shanghai"
+```
+
+### 5.4 VAD 配置
+
+```python
+VAD_CONFIG = {
+    "threshold":         0.5,
+    "min_speech_len_s":  0.25,
+    "min_silence_len_s": 0.1,
+    "max_speech_len_s":  30.0,
+    "speech_pad_ms":     300,
+    "sample_rate":       16000,
+}
+```
+
+### 5.5 内存编排
+
+```python
+MEMORY_CONFIG = {
+    "stage_unload":      True,    # 阶段完成后卸载模型内存
+    "force_gc_each":     1,       # 每个音频结束后强制 GC
+}
+```
+
+---
+
+## 6. 变更日志
+
+| 版本 | 日期 | 变更内容 |
+|------|------|---------|
+| v1.0 | 2026-07-31 | 初始版本 |
+| v1.1 | 2026-07-31 | **重大更新**: 强化时间戳系统，增加绝对时间计算、时区处理、防篡改机制、时间戳验证 |
+| v1.2 | 2026-08-01 | **需求对齐更新**: ① 新增声纹库与说话人识别 (FR-003-VID)；② 新增归档有机重命名 (FR-001-AR)；③ 时间戳来源改为**创建时间优先 + 文件名校验 + 手动确认兜底**；④ 新增 Tailscale 跨设备安全访问 (FR-008-T)；⑤ 统一北京时间 (UTC+8)；⑥ 去重改为内容 SHA-256 哈希；⑦ ASR 仅保留 Qwen3-ASR-0.6B |
+| v1.3 | 2026-08-01 | **工程实现对齐**: ① 新增 FR-001-DIR 子文件夹递归扫描；② 新增 FR-001-MULTI 同名多格式处理；③ VAD 模型更新；④ PyAnnote 库版本确认 4.0.7；⑤ 路径规范化 `/home/kevin/asr_sys_local/`；⑥ 配置对齐 `settings.py`；⑦ Qwen3-ASR 需设 `bos_token_id`、模型加载优先 `local_files_only=True` |
+| v1.4 | 2026-08-01 | **系统看板 + 精简**: ① FR-008 重新设计：4 个 Tab（系统状态/处理记录/声纹库/搜索），优先级从 P1 提升至 P0；② 访问方式明确；③ 删除 2.2 方案评估表格；④ 里程碑更新 |
+| v1.5 | 2026-08-01 | **UX 细化 + 信息可视化**: ① FR-008 精简合并与 §8 重复内容；② 新增系统已运行时长和上次处理完成时间；③ 新增数据存储面板；④ 第 8 节重构为先分类再布局；⑤ 新增数据库结构可视化；⑥ 新增归档文件浏览；⑦ FR-001-AR 新增空文件夹清理 |
+| v1.6 | 2026-08-01 | **看板全面重构**: ① 新增 4 态状态机；② 状态带 UI；③ UI 基调白底简洁；④ Tab 重命名；⑤ 修复 watchdog 事件漏采 bug；⑥ 新增状态机定义表 |
+| v1.7 | 2026-08-01 | **PRD 去重 + UI 增强**: ① §6.2/§6.3 去重；② 修复排队中误报；③ UI 区块化；④ 处理中显示阶段进度条；⑤ 概览页 10 分钟自动刷新 |
+| v1.8 | 2026-08-01 | **KVI 视觉风格**: ① 灰阶为基；② 暖赭作标点；③ 克制层级；④ 状态说明统一；⑤ 卡片内部紧凑 |
+| v1.9 | 2026-08-01 | **WebUI 布局精修**: ① 隐藏 Streamlit 顶部工具栏；② 标题移到左上角；③ Tab 改成文字导航式；④ 区块间隔加大 |
+| v2.0 | 2026-08-01 | **KVI 深化 + 减少边框卡片**: ① 数字放大至 3rem；② 边框卡片→白底圆角模块；③ 区块间距加大至 3rem；④ 系统负担条自绘；⑤ 统计数字 flex 布局；⑥ 归档文件浏览改用原生 HTML；⑦ 隐藏汉堡菜单；⑧ 标题增大 |
+| v2.1 | 2026-08-02 | **WebUI 实现再对齐**: ① 导航定稿 `st.segmented_control`；② 状态带改为圆点+文字纯指示器；③ 隐藏 Streamlit header 条；④ 页脚改为版本时间戳；⑤ 新增 `.streamlit/config.toml` 主题配置；⑥ 新增一键部署脚本 `deploy_webui.sh`；⑦ 统计数字从矩形色块改为纯文本大数字行；⑧ FR-001 改为手动触发处理，watchdog 移除；⑨ 面板内部底部留白修复 |
+| v2.2 | 2026-08-02 | **声纹簇 + 人物档案 + 中文搜索修复**: ① 界面调整：最近处理移至处理记录页顶部，新增音频处理流程面板；② 中文搜索修复 FR-008-S：新增 `src/fts.py` + jieba 分词 FTS 表；③ 新增 FR-003-CLUSTER 声纹簇；④ 新增 FR-010 人物档案；⑤ 导入统一修复为顶层导入；⑥ VAD 实现对齐 PRD；⑦ 设置变量名统一 |
+| v2.3 | 2026-08-02 | **声纹标注学习定稿**: ① 取消专门录声纹环节，标注学习主流程；② 处理成果统计调整；③ 人物档案表单体感优化；④ 删除测试音频及其产物；⑤ 存量编号统一为 `unknown_XXXX` 四位小写；⑥ 记录 ThinkPad 代理 |
+| v2.4 | 2026-08-02 | **说话人显示名映射 + 全文 review**: ① 新增 `speaker_display_map()` 显示层映射；② 全文一致性 review 修正编号写法、架构图、FR 描述 |
+| v2.5 | 2026-08-02 | **状态机修正 + 异常兜底 + ASR 文本清洗**: ① 状态机 5 分钟兜底；② 模型加载失败兜底；③ `_clean_asr_text()` 清洗特殊 token；④ 存量数据回填 transcripts 表 + text_backups 文件 |
+| v2.6 | 2026-08-02 | **状态机升级至 5 态**: 新增处理失败状态，derive_state() 7 步优先级精确化，WebUI 预启动机制，按钮繁忙逻辑 |
+| v2.7 | 2026-08-02 | **VAD 切换 + 格式精简 + 加载超时**: ① VAD 从 PyAnnote VAD 切换为 Silero VAD；② 输出格式移除 SRT；③ 模型加载 300 秒超时；④ 6 阶段进度条三态显示；⑤ 首页文件名显示修复 |
+| v2.8 | 2026-08-02 | **兄弟文件删除**: ① `_archive_brother_files()` → `_delete_brother_files()`；② 清理错误路径；③ 已归档冗余格式清理 |
+| v2.9 | 2026-08-02 | **错误处理逻辑修正**: ① `move_to_error()` 重写为仅生成 `.error.txt` 日志，不移文件；② 失败时兄弟文件保留；③ `count_error_files()` 改为统计 `.error.txt` 日志数量 |
+| v2.10 | 2026-08-02 | **VAD 参数顺序修复**: `get_speech_timestamps()` 第三个位置参数是 `threshold` 而非 `sampling_rate`，`sr` 必须作为 `sampling_rate=sr` 关键字参数传入。修复前报 `"multiple values for argument 'threshold'"`。详见 §3.1 |
+| v2.11 | 2026-08-02 | **进度时间戳 + 标注计数修复**: ① `_status()` 新增 `processing_start_time` 和 `stage_start_time` 自动追踪，处理中时 WebUI 展示处理起始时间/已耗时、当前步骤起始时间/已耗时；② 标注声纹计数从 `COUNT(*)` 改为 `COUNT(DISTINCT assigned_name)`，按唯一姓名去重。详见 §1.4、§1.5 |
+| v2.12 | 2026-08-02 | **人物档案声纹关联**: `list_persons()` 新增 `has_voiceprint` 字段，通过 `EXISTS` 子查询自动判断人物是否已有声纹簇标注；WebUI 人物档案面板新增"是否已标注声纹"列。详见 §1.6 |
+| v2.13 | 2026-08-02 | **状态机精简为 3 态**: 移除从未出现的"已停止"和"排队中"状态，`derive_state()` 优先级从 9 步精简为 8 步。详见 §1.3 |
+| v2.14 | 2026-08-02 | **错误文件归档**: `process_inbox.py` 新增 `_archive_old_errors()`，每次处理前将旧 `.error.txt` 移入 `error/archived/`；error/ 根目录只保留当前批次错误 |
+| v2.15 | 2026-08-02 | **说话人分离安全机制**: ① 子进程隔离：长音频(>=10分钟)在独立子进程中运行，OOM 不拖垮主进程；② 动态超时：基准 600s + 每 10 分钟 300s，上限 3600s；③ 退出码检测：区分 OOM(SIGKILL/-9) 和段错误(SIGSEGV/-11)；④ 信号处理器：SIGTERM/SIGINT 自动清理锁文件和状态。详见 §3.2 |
+| v2.16 | 2026-08-02 | **Diarization 兼容修复 + 离线加载 + 超时放宽**: ① pyannote 4.x 返回 `DiarizeOutput` 需取 `.speaker_diarization`（修复 `'DiarizeOutput' object has no attribute 'itertracks'`）；② `_load_pipeline()` 改用 `HF_HUB_OFFLINE=1` 离线优先（pyannote 4.x 不支持 `local_files_only` 参数）；③ 超时放宽为基准 1200s + 每 10 分钟 900s、上限 7200s（原策略误杀 1 倍实时的长音频）；④ 补齐 Silero VAD `silero_vad.jit` 权重（缺失时假网络错误）；⑤ 实测长音频子进程模式接近 1 倍实时。详见 §3.1、§3.2 |
+| v2.17 | 2026-08-02 | **错误时间戳 + 准备处理按钮 + 移除自动超时 + 完全离线**: ① 错误文件命名附加产生时间戳 `{源文件}_{YYYYMMDD_HHMMSS}.error.txt`（§3.6）；② 归档逻辑重构为共享函数 `src/archive.py::archive_error_files()`，归档时附加原文件创建时间戳；③ WebUI 新增「准备处理收件箱」按钮（归档旧错误 + 解锁残留锁文件），与「开始处理收件箱」并排（§3.6）；④ **移除说话人分离全部自动超时**（v2.15/v2.16 策略实测会误杀或干等），子进程无限 `join()` + 崩溃检测，挂死由外部每 10 分钟监控发现（§3.2）；⑤ **模型完全离线**：Silero VAD `source='local'` 本地加载（§3.1）、Qwen3-ASR `local_files_only=True` 优先（§3.4）、声纹 `HF_HUB_OFFLINE=1` 优先（§3.3）；⑥ **修复 `.error.txt` 后缀判断 bug**：`Path.suffix` 只返回最后一个后缀（`.txt`），`f.suffix != ".error.txt"` 永远为真导致 `archive_error_files()` 匹配不到任何文件，改为 `f.name.endswith(".error.txt")`（§3.6）；⑦ **超时 Review 结论**：自动超时仅保留在模型加载阶段（300s，不误杀），处理执行阶段一律不设超时（§2.3） |
+| v2.18 | 2026-08-02 | **刷新频率放宽 + 进度面板表格化 + ASR 全链路修复 + VAD 单位修复**: ① 概览页处理中自动刷新 5s→15s（§1.4）；②「处理进度」面板改为 3 行 3 列表格（表头：任务/起始时间/耗时；总任务行 + 当前步骤·XXXX 行，起始时间黑色、总耗时赭红、当前步骤耗时暖赭），新增 `fmt_full_time()` 显示完整时间（§1.4）；③ **Qwen3-ASR 离线加载修复**：模型以自定义解压目录 `MODELS_DIR/Qwen3-ASR-0.6B-hf/` 存放，`local_files_only=True` 只认 hub 缓存格式导致误判"本地缺失"回退联网失败，改为**自定义目录存在则直接按本地路径加载**（§3.4）；④ **Qwen3-ASR 调用方式重构**：模型类从 `AutoModelForSpeechSeq2Seq` 改为 **`AutoModelForMultimodalLM`**，输入改用官方 `processor.apply_transcription_request()` 入口，解码用 `return_format="transcription_only"`——修复手工拼参导致的 `missing 'audio'`、`input_features_mask` 缺失、`bos_token_id` 未定义、`Audio features and audio tokens do not match` 一系列错误（§3.4）；⑤ **Silero VAD 时间戳单位修复**：返回的是采样点非毫秒，`/1000` 改为 `/ sr`，修复 6 秒音频检测出 0~100 秒语音段导致"无有效语音段"（§3.1）；⑥ **VadSegment 字段名修复**：`vad_has_overlap()` 误用 `.start/.end`，改为 `.start_offset_s/.end_offset_s`（§3.1）；⑦ 修掉 `apply_transcription_request` 的 `sampling_rate` warning（改用 `processor_kwargs`） |
+| v2.19 | 2026-08-03 | **总任务行空白修复 + 人物档案保留 + 编号健壮性 + 工程代码 Review 清理**: ① `_status()` 写入判断 `"processing_start_time" not in data` → `not data.get(...)`，修复空闲清理后下次任务"总任务"行永远空白（§1.4）；② 标注回填改为 `get_person()` 判断、仅新建时才 `upsert_person()`，不再清空已填的性别/出生年/关系/备注（§1.6）；③ `next_unknown_label()` 改为扫描全表取 MAX(编号)+1，删除大编号簇后不再 UNIQUE 冲突（§4.5）；④ `clean_text()` 复用 `archive._clean_asr_text` 消除展示层重复实现；⑤ **工程 Review 清理**：修复 `enroll_voiceprint.py` 中文引号 SyntaxError 与 `src.config.settings` 错误导入、移除 `PyAnnoteVad` 遗留别名、pipeline 统一绝对导入、函数内 import 上提、`AUDIO_EXTS`/`BJT`/`db_conn` 去重、`run.sh` banner 旧路径、systemd 单元与 `install_services.sh` 对齐生产路径、`step2_download_models.sh` 对齐 `models/` 目录（§4.8）；⑥ `deploy_webui.sh` 纳入 CLI 配套文件并新增远端导入校验，删除一次性过程稿 `step1_setup.sh`（§4.8） |
+| v2.20 | 2026-08-03 | **声纹标注校准**: ① `db.py` 新增 `unassign_cluster_name()`（清空 assigned_name，编号保留）；② `webui.py` 新增 `apply_cluster_label()` 统一「标注为某人 / 改标他人 / 改回未知」三种操作的回填逻辑（§1.7）；③「声纹簇·标注学习」面板重构——列出全部簇、`st.tabs` 双操作区、改回未知两步确认防误操作（§1.7）；④ 改回未知沿用簇原编号（label 为稳定身份，标注→改回→再标注全程可逆，不产生新编号）（§1.7）；⑤ 数据层实测通过：标注回填、档案保护、改回可逆三路径 PASS |
+| v2.21 | 2026-08-03 | **CLI 环境变量根治（默认路径残留）**: ① `run.sh` 启动时自动 `source .env`（`set -a` 导出生产环境变量）并**强制注入 `ASR_PROJ_ROOT`**，CLI 与 WebUI 共用同一套生产路径（§4.8）；② 根治未加载 `.env` 时 settings 走默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）在 HOME 下自动 `mkdir` 制造残留目录的问题——`~/audio_archive`、`~/asr-local/model_cache` 均已出现过并被清理（§4.8）；③ `.hf_token` 降级为无 `.env` 时的兜底 |
+
+---
+
+**文档结束**
