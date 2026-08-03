@@ -1022,6 +1022,7 @@ $ bash run.sh
 | v2.25 | 2026-08-03 | **声纹阈值调低 + 流程面板输入/产出分行**：① 声纹匹配置信度阈值调低（自动标注 0.75→0.65、疑似待确认 0.60→0.50，配置见 [TDD §5](./TDD_local_asr_system.md#5-配置参考)）——提高同一声纹跨录音的自动关联成功率，误关联可由「校准已标注」手工改回（FR-003-CLUSTER）；② WebUI 首页「音频处理流程」面板底部输入/产出**各占一行**，输入格式列表按格式优先级（FR-001-MULTI）排序为 `wav / flac / m4a / mp3 / opus / ogg / webm` |
 | v2.26 | 2026-08-03 | **目录结构对齐生产布局**：git 仓库与 MacBook 工程根由"代码平铺"调整为与运行节点一致的 `asr_sys_local/` 包裹结构——代码位于 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以占位文件保留结构（内容属个人数据，不入库）；部署环境（FR-008）中的代码/数据目录路径不变（本就为 `/home/kevin/asr_sys_local/...`）；需求功能无变化，工程细节见 [TDD v2.26](./TDD_local_asr_system.md#6-变更日志) |
 | v2.27 | 2026-08-03 | **文档组织调整**：PRD/TDD 上提至工程总目录 `asr_sys_local/` 一级（与 `asr-local`/`audio_archive`/`audio_inbox` 并列），重命名为 `PRD_local_asr_system.md` / `TDD_local_asr_system.md`；两文档互引索引、`file:///` 绝对路径已同步更新，指向不再失效；需求功能无变化，工程细节见 [TDD v2.27](./TDD_local_asr_system.md#6-变更日志) |
+| v2.28 | 2026-08-03 | **README 英文化上提仓库根**：README 移至仓库根（`asr_sys_local/README.md`）并全文改写为英文，核心传达"本地运行、完全离线、数据不出本机"；仓库 Description（英文文案）需在 GitHub 网页 About 处手动设置（本机无 gh CLI/token）；需求功能无变化，工程细节见 [TDD v2.28](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 

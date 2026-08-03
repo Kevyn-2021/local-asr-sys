@@ -488,11 +488,12 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
   │   ├── systemd/       # 系统服务单元
   │   ├── run.sh         # CLI 主菜单（PROJ_ROOT = asr-local）
   │   ├── deploy_webui.sh# 部署脚本（LOCAL_ROOT = asr-local）
-  │   ├── README.md / requirements.txt
+  │   └── requirements.txt
   ├── audio_inbox/       # 数据：收件箱（.gitkeep 占位，内容不入库）
   ├── audio_archive/     # 数据：归档与数据库（.gitkeep 占位，内容不入库）
-  ├── PRD_local_asr_system.md   # 需求文档（一级目录）
-  └── TDD_local_asr_system.md   # 技术设计文档（一级目录）
+  ├── README.md                  # 项目说明（英文，仓库根展示）
+  ├── PRD_local_asr_system.md    # 需求文档（一级目录）
+  └── TDD_local_asr_system.md    # 技术设计文档（一级目录）
   ```
 
   `deploy_webui.sh` 的 `LOCAL_ROOT` 基于脚本自身位置（`$(dirname "$0")`），随代码整体移入 `asr-local/` 后自动指向部署源根；`REMOTE_ROOT` 硬编码 `/home/kevin/asr_sys_local/asr-local`，两端目标一致，部署逻辑无需改动。
@@ -602,6 +603,7 @@ MEMORY_CONFIG = {
 | v2.25 | 2026-08-03 | **声纹阈值调低 + WebUI 流程面板输入/产出分行**: ① `VOICEPRINT_CONFIG` 三档阈值自 0.75/0.60 调低为 **0.65/0.50**（§3.3）——同一声纹跨录音相似度可能略低于 0.75 导致未自动关联，调低后提高自动关联成功率，误关联可由「校准已标注」（PRD FR-003-CLUSTER v2.20）手工改回；② WebUI「音频处理流程」面板 `.pipe-io` 改为纵向布局（输入/产出各占一行），输入格式列表按 `_FORMAT_PRIORITY` 优先级排序为 `wav / flac / m4a / mp3 / opus / ogg / webm`（§1.5） |
 | v2.26 | 2026-08-03 | **目录结构对齐生产布局**: ① git 仓库根由"代码平铺根"调整为与运行节点 `/home/kevin/asr_sys_local` **完全一致**的包裹结构——代码整体移入 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以 `.gitkeep` 占位随仓库保留（内容不入库；`.gitignore` 原整目录忽略改为 `目录/*` + `!目录/.gitkeep` negate 规则）（§4.8）；② `deploy_webui.sh` 的 `LOCAL_ROOT` 随脚本自定位自动指向新根、`REMOTE_ROOT` 硬编码不变，部署逻辑无需改动（§4.8）；③ README 目录树同步为包裹结构；④ ThinkPad 生产布局本就如此，无物理改动，仅重新部署验证 |
 | v2.27 | 2026-08-03 | **文档上提一级目录 + 重命名**: ① PRD/TDD 由 `asr_sys_local/asr-local/` 移出至一级目录 `asr_sys_local/`，与 `asr-local`/`audio_archive`/`audio_inbox` 并列，并重命名为 **`PRD_local_asr_system.md` / `TDD_local_asr_system.md`**（英文文件名，避免中文文件名跨平台/链接转义问题）；② 全文索引同步——PRD↔TDD 互引链接、`file:///` 绝对路径（含 diarization.py 代码引用路径补 `asr_sys_local/asr-local` 段）全部更新为新文件名与新路径（§4.8）；③ README 目录树同步（§4.8） |
+| v2.28 | 2026-08-03 | **README 上提仓库根 + 英文化**: ① README 由 `asr_sys_local/asr-local/` 移至仓库根 `asr_sys_local/README.md`（GitHub 仅在仓库根展示 README）；② 全文改写为英文（本地运行、数据不出本机、离线推理为核心理念）；③ 目录树同步——README/PRD/TDD 并列一级目录（§4.8）；④ GitHub 仓库 **Description（英文）需在网页 About 设置**——本机无 gh CLI/GitHub token，无法命令行设置，提供文案待用户粘贴 |
 
 ---
 
