@@ -41,7 +41,9 @@ asr_sys_local/                # 工程总目录（= git 仓库根，与运行节
 │   ├── deploy_webui.sh       # 部署脚本：同步代码到运行节点并重启服务
 │   └── requirements.txt
 ├── audio_inbox/              # 数据：收件箱（放入待处理音频；内容不入库）
-└── audio_archive/            # 数据：归档音频 / 文本备份 / 数据库（内容不入库）
+├── audio_archive/            # 数据：归档音频 / 文本备份 / 数据库（内容不入库）
+├── PRD_local_asr_system.md   # 需求文档（功能需求 / 数据模型 / UI 设计）
+└── TDD_local_asr_system.md   # 技术设计文档（架构 / 实现细节 / 配置参考 / 变更日志）
 ```
 
 ## 快速开始

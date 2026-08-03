@@ -8,7 +8,7 @@
 > 
 > **本文档的角色**：技术设计文档（TDD），聚焦"如何实现"——技术架构、模型选型、工程实现细节、踩坑记录、配置参考、变更日志。它回答"系统怎么建"。
 > 
-> **配套文档**：产品的需求定义（功能需求、非功能需求、UI 设计、数据模型）见另一份文档 [PRD_本地音频转录系统.md](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/PRD_本地音频转录系统.md)。
+> **配套文档**：产品的需求定义（功能需求、非功能需求、UI 设计、数据模型）见另一份文档 [PRD_local_asr_system.md](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/asr_sys_local/PRD_local_asr_system.md)。
 > 
 > **内容不重复原则**：TDD 与 PRD 的内容互不重复。同样的内容只会在一个文档中出现，不会同时出现在两份文档中。两文档通过相互索引引用，而非复制粘贴。这样做的目的是：避免同一内容在多处维护，因漏改某处而导致不一致。
 > 
@@ -130,7 +130,7 @@ WebUI 通过 `read_status()` 读取这些字段，计算已耗时并渲染进度
 - 耗时用 `fmt_elapsed()` 计算「现在 − 起始时间」
 - 概览页处理中/失败时每 **15 秒**自动刷新（v2.18 由 5 秒放宽），空闲时每 10 分钟
 
-详见 [PRD §8.2 页 1 线框图](./PRD_本地音频转录系统.md#82-系统看板布局ui-v20)。
+详见 [PRD §8.2 页 1 线框图](./PRD_local_asr_system.md#82-系统看板布局ui-v20)。
 
 ### 1.5 标注声纹计数逻辑
 
@@ -340,7 +340,7 @@ i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟�
 - 子进程内独立加载 PyAnnote Pipeline 模型，执行推理后将结果通过 `Queue` 传回
 - 子进程异常退出（退出码非 0）由主进程感知并上报；挂死由外部监控发现
 
-详见 [diarization.py](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/src/diarization.py)。
+详见 [diarization.py](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/asr_sys_local/asr-local/src/diarization.py)。
 
 ### 3.3 声纹识别 — PyAnnote Embedding
 
@@ -351,7 +351,7 @@ i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟�
   - `0.50 <= score < 0.65` → 疑似待确认
   - `score < 0.50` → 未识别，进入声纹簇流程
 
-声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_本地音频转录系统.md#fr-003-cluster-声纹簇持久化与标注学习)。
+声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_local_asr_system.md#fr-003-cluster-声纹簇持久化与标注学习)。
 
 ### 3.4 ASR — Qwen3-ASR-0.6B
 
@@ -401,7 +401,7 @@ t = re.sub(r'\blanguage\s+[a-zA-Z]+', '', t, flags=re.IGNORECASE)
 
 ### 3.5 时间戳处理
 
-提取策略与计算公式见 [PRD FR-001-TS](./PRD_本地音频转录系统.md#fr-001-ts-录音开始时间提取-时间戳核心) 和 [PRD FR-005](./PRD_本地音频转录系统.md#fr-005-时间戳计算与存储-核心功能)；时区规则见 [PRD §7.2](./PRD_本地音频转录系统.md#72-时间戳格式规范)。
+提取策略与计算公式见 [PRD FR-001-TS](./PRD_local_asr_system.md#fr-001-ts-录音开始时间提取-时间戳核心) 和 [PRD FR-005](./PRD_local_asr_system.md#fr-005-时间戳计算与存储-核心功能)；时区规则见 [PRD §7.2](./PRD_local_asr_system.md#72-时间戳格式规范)。
 
 #### 正则表达式
 ```python
@@ -411,7 +411,7 @@ r"(?P<Y>\d{4})[-_](?P<M>\d{2})[-_](?P<D>\d{2})[-_](?P<h>\d{2})[-_](?P<m>\d{2})[-
 
 ### 3.6 错误处理
 
-失败处理逻辑与兄弟文件规则见 [PRD FR-001-AR](./PRD_本地音频转录系统.md#fr-001-ar-归档与有机重命名) 和 [PRD FR-001-MULTI](./PRD_本地音频转录系统.md#fr-001-multi-同名多格式文件处理)。
+失败处理逻辑与兄弟文件规则见 [PRD FR-001-AR](./PRD_local_asr_system.md#fr-001-ar-归档与有机重命名) 和 [PRD FR-001-MULTI](./PRD_local_asr_system.md#fr-001-multi-同名多格式文件处理)。
 
 ```python
 def move_to_error(src: Path, reason: str = "") -> None:
@@ -488,9 +488,11 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
   │   ├── systemd/       # 系统服务单元
   │   ├── run.sh         # CLI 主菜单（PROJ_ROOT = asr-local）
   │   ├── deploy_webui.sh# 部署脚本（LOCAL_ROOT = asr-local）
-  │   ├── README.md / PRD / TDD / requirements.txt
+  │   ├── README.md / requirements.txt
   ├── audio_inbox/       # 数据：收件箱（.gitkeep 占位，内容不入库）
-  └── audio_archive/     # 数据：归档与数据库（.gitkeep 占位，内容不入库）
+  ├── audio_archive/     # 数据：归档与数据库（.gitkeep 占位，内容不入库）
+  ├── PRD_local_asr_system.md   # 需求文档（一级目录）
+  └── TDD_local_asr_system.md   # 技术设计文档（一级目录）
   ```
 
   `deploy_webui.sh` 的 `LOCAL_ROOT` 基于脚本自身位置（`$(dirname "$0")`），随代码整体移入 `asr-local/` 后自动指向部署源根；`REMOTE_ROOT` 硬编码 `/home/kevin/asr_sys_local/asr-local`，两端目标一致，部署逻辑无需改动。
@@ -599,6 +601,7 @@ MEMORY_CONFIG = {
 | v2.23 | 2026-08-03 | **部署地址可配置 + 部署验证**: ① `deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<IP>` 环境变量覆盖（默认当前地址），ThinkPad 随家/办公室切换网络时无需改脚本（§4.8）；② 平铺重构后重新部署验证——MacBook 与 ThinkPad 18 个运行时文件 md5 全量一致、服务 active、`run.sh` PROJ_ROOT 修复在运行节点生效（§4.8） |
 | v2.25 | 2026-08-03 | **声纹阈值调低 + WebUI 流程面板输入/产出分行**: ① `VOICEPRINT_CONFIG` 三档阈值自 0.75/0.60 调低为 **0.65/0.50**（§3.3）——同一声纹跨录音相似度可能略低于 0.75 导致未自动关联，调低后提高自动关联成功率，误关联可由「校准已标注」（PRD FR-003-CLUSTER v2.20）手工改回；② WebUI「音频处理流程」面板 `.pipe-io` 改为纵向布局（输入/产出各占一行），输入格式列表按 `_FORMAT_PRIORITY` 优先级排序为 `wav / flac / m4a / mp3 / opus / ogg / webm`（§1.5） |
 | v2.26 | 2026-08-03 | **目录结构对齐生产布局**: ① git 仓库根由"代码平铺根"调整为与运行节点 `/home/kevin/asr_sys_local` **完全一致**的包裹结构——代码整体移入 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以 `.gitkeep` 占位随仓库保留（内容不入库；`.gitignore` 原整目录忽略改为 `目录/*` + `!目录/.gitkeep` negate 规则）（§4.8）；② `deploy_webui.sh` 的 `LOCAL_ROOT` 随脚本自定位自动指向新根、`REMOTE_ROOT` 硬编码不变，部署逻辑无需改动（§4.8）；③ README 目录树同步为包裹结构；④ ThinkPad 生产布局本就如此，无物理改动，仅重新部署验证 |
+| v2.27 | 2026-08-03 | **文档上提一级目录 + 重命名**: ① PRD/TDD 由 `asr_sys_local/asr-local/` 移出至一级目录 `asr_sys_local/`，与 `asr-local`/`audio_archive`/`audio_inbox` 并列，并重命名为 **`PRD_local_asr_system.md` / `TDD_local_asr_system.md`**（英文文件名，避免中文文件名跨平台/链接转义问题）；② 全文索引同步——PRD↔TDD 互引链接、`file:///` 绝对路径（含 diarization.py 代码引用路径补 `asr_sys_local/asr-local` 段）全部更新为新文件名与新路径（§4.8）；③ README 目录树同步（§4.8） |
 
 ---
 
