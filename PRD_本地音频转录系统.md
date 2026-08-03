@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v3.6  
+**版本**: v3.7  
 **日期**: 2026-08-03  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -320,11 +320,17 @@
 #### FR-008: 系统看板 (Web Dashboard)
 - **优先级**: P0
 - **描述**: 用户通过浏览器访问 ThinkPad 的局域网 IP 或 Tailscale IP 即可查看系统实时状态、处理历史、声纹库和归档文件。设计原则：**打开即知全貌**；暖纸灰底、白底面板、信息分段清晰
-- **技术**: Streamlit，监听 `0.0.0.0:8501`
-- **访问方式**: 
-  - 局域网：`http://192.168.3.203:8501`
-  - Tailscale：`http://<ThinkPad-Tailscale-IP>:8501`
+- **技术**: Streamlit，监听 `0.0.0.0:8501`（systemd 用户服务 `asr-webui.service` 常驻运行、开机自启）
+- **浏览器访问环境**:
+  - 地址格式：`http://<ThinkPad当前IP>:8501`（端口 8501）
+  - 当前示例：办公室局域网 `http://10.44.21.23:8501`；家里局域网 `http://192.168.3.203:8501`；Tailscale `http://<ThinkPad-Tailscale-IP>:8501`
+  - **注：以上均为示例地址——ThinkPad 随网络环境更换 IP，实际使用时请替换为 ThinkPad 当前的真实地址**
   - 建议加入浏览器书签，一键打开
+- **部署环境（SSH）**:
+  - SSH 地址：`ssh kevin@<ThinkPad当前IP>`（端口 22，默认）；部署脚本默认连接 `kevin@10.44.21.23`
+  - 代码目录：`/home/kevin/asr_sys_local/asr-local/`；数据目录：`/home/kevin/asr_sys_local/audio_inbox/`（收件箱）、`/home/kevin/asr_sys_local/audio_archive/`（归档与数据库）
+  - 部署命令：`bash deploy_webui.sh`；ThinkPad 更换网络后：`ASR_REMOTE_HOST=kevin@<新IP> bash deploy_webui.sh`
+  - **注：IP 需替换为 ThinkPad 当前的真实地址**
 - **状态机**: 看板顶部状态带固定显示 3 态（空闲/处理中/处理失败），当前态高亮；状态由处理流程写入 `status.json`、pipeline 通过 `status_cb` 上报阶段共同驱动，WebUI 预启动写入 `_write_status_prelaunch()` 防止窗口期误判，详见 §8.1.1
 - **手动处理入口**: 概览页顶部「收件箱 · 手动处理」面板，见 FR-008-M
 - **页面结构**: 4 个页面，顶部用分段控件（`st.segmented_control`）切换，每个页签是独立矩形区块，详见 §8.1 和 §8.2
@@ -1012,6 +1018,7 @@ $ bash run.sh
 | v2.21 | 2026-08-03 | **CLI 环境变量根治**：`run.sh` 启动时自动加载 `.env`（生产环境变量）并强制注入 `ASR_PROJ_ROOT`，CLI 与 WebUI 共用同一套生产路径——根治未加载 `.env` 时 settings 走默认值（`~/asr-local`、`~/audio_archive`、`model_cache`）在 HOME 下制造残留目录的问题（清理 `/home/kevin/asr-local` 残留） |
 | v2.22 | 2026-08-03 | **工程组织与版本管理**：工程平铺重构（部署源与仓库根合一，与运行节点布局一致）、修复 CLI 主菜单（`run.sh`）工程根路径 bug、代码托管至公开 GitHub 仓库 `Kevyn-2021/local-asr-sys`（`.gitignore` 排除机密与个人数据、README 强调本地运行与数据不出本机）；需求功能无变化，工程细节见 [TDD v2.22](./TDD_本地音频转录系统.md#6-变更日志) |
 | v2.23 | 2026-08-03 | **PRD 与实现对齐 + 部署地址可配置**：① §8.2 页 1 线框图与 WebUI 实际对齐——页面信息顺序（处理成果 → 系统负担 → 数据位置 → 音频处理流程）、补「准备处理收件箱」按钮、补 6 阶段进度条示意；② §8.1 数据来源表对齐实现（处理记录默认取最近 200 条、删除实现中不存在的"成功/失败统计"、数据位置统计项修正）；③ 部署脚本支持 `ASR_REMOTE_HOST` 环境变量覆盖运行节点地址（ThinkPad 随网络环境更换 IP） |
+| v2.24 | 2026-08-03 | **部署与访问环境说明**：FR-008 补充**浏览器访问环境**（地址格式 `http://<ThinkPad当前IP>:8501`、办公室/家里/Tailscale 示例地址）与**部署环境**（SSH 地址、代码/数据目录、`deploy_webui.sh` 与 `ASR_REMOTE_HOST` 部署命令），并注明所列为示例地址、实际使用前需替换为 ThinkPad 当前真实 IP |
 
 ---
 
