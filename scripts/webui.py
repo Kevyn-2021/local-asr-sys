@@ -53,7 +53,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-03-09:08:57"
+UI_VERSION = "2026-08-03-11:52:21"
 
 st.set_page_config(page_title="ASR 本地转录系统", page_icon="🎙️", layout="wide")
 
@@ -328,8 +328,8 @@ pre, code { line-height: 1.5 !important; }
     padding: 0 8px; flex-shrink: 0; user-select: none;
 }
 .pipe-io {
-    display: flex; gap: 8px; margin-top: 10px; font-size: 0.78rem;
-    color: var(--fg-3); flex-wrap: wrap;
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: 6px; margin-top: 10px; font-size: 0.78rem; color: var(--fg-3);
 }
 .pipe-io span {
     background: var(--bg-subtle); border: 1px solid var(--line-subtle);
@@ -990,7 +990,7 @@ def render_pipeline_diagram() -> str:
     flow = "<div class='pipe-flow'>" + "".join(nodes) + "</div>"
     io = (
         "<div class='pipe-io'>"
-        "<span>输入：收件箱音频（wav / mp3 / m4a / flac / ogg / opus / webm）</span>"
+        "<span>输入：收件箱音频（wav / flac / m4a / mp3 / opus / ogg / webm，按格式优先级排序）</span>"
         "<span>产出：带时间戳的转录文字 · 归档音频 · txt/json 备份 · SQLite 入库</span>"
         "</div>"
     )

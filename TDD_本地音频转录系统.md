@@ -346,10 +346,10 @@ i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟�
 
 #### 匹配机制
 - 对每个 Diarization 输出的说话人，聚合全部片段提取声纹向量
-- 与声纹库逐一计算余弦相似度：
-  - `score >= 0.75` → 自动标注
-  - `0.60 <= score < 0.75` → 疑似待确认
-  - `score < 0.60` → 未识别，进入声纹簇流程
+- 与声纹库逐一计算余弦相似度（三档阈值配置于 `config/settings.py` `VOICEPRINT_CONFIG`；v2.25 自 0.75/0.60 调低为 0.65/0.50，提高同一声纹跨录音的自动关联成功率，误关联可由 Web「校准已标注」手工改回）：
+  - `score >= 0.65` → 自动标注
+  - `0.50 <= score < 0.65` → 疑似待确认
+  - `score < 0.50` → 未识别，进入声纹簇流程
 
 声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_本地音频转录系统.md#fr-003-cluster-声纹簇持久化与标注学习)。
 
@@ -595,6 +595,7 @@ MEMORY_CONFIG = {
 | v2.21 | 2026-08-03 | **CLI 环境变量根治（默认路径残留）**: ① `run.sh` 启动时自动 `source .env`（`set -a` 导出生产环境变量）并**强制注入 `ASR_PROJ_ROOT`**，CLI 与 WebUI 共用同一套生产路径（§4.8）；② 根治未加载 `.env` 时 settings 走默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）在 HOME 下自动 `mkdir` 制造残留目录的问题——`~/audio_archive`、`~/asr-local/model_cache` 均已出现过并被清理（§4.8）；③ `.hf_token` 降级为无 `.env` 时的兜底 |
 | v2.22 | 2026-08-03 | **工程平铺重构 + GitHub 版本管理**: ① 目录平铺——`scripts/pkg_staging/` 套壳上提为单层工程根（config/scripts/src/systemd/run.sh/deploy_webui.sh），工程根 = git 仓库根 = 部署源，与 ThinkPad 生产布局一致（§4.8）；② 修复 `run.sh` 的 `PROJ_ROOT` 多退一层 bug（`SCRIPT_DIR/..` → `SCRIPT_DIR`，run.sh 与工程根同层），此前该 bug 使 run.sh 实际不可用（§4.8）；③ 修复 `deploy_webui.sh` 的 `LOCAL_ROOT`（去掉 `pkg_staging` 段）（§4.8）；④ 新增 GitHub 公开仓库 `Kevyn-2021/local-asr-sys`，`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型/`sample_audio`），MacBook 为唯一 git 源、ThinkPad 不纳入 git 继续 deploy 同步（§4.8）；⑤ 新增 README（强调本地运行、完全离线、数据不出本机） |
 | v2.23 | 2026-08-03 | **部署地址可配置 + 部署验证**: ① `deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<IP>` 环境变量覆盖（默认当前地址），ThinkPad 随家/办公室切换网络时无需改脚本（§4.8）；② 平铺重构后重新部署验证——MacBook 与 ThinkPad 18 个运行时文件 md5 全量一致、服务 active、`run.sh` PROJ_ROOT 修复在运行节点生效（§4.8） |
+| v2.25 | 2026-08-03 | **声纹阈值调低 + WebUI 流程面板输入/产出分行**: ① `VOICEPRINT_CONFIG` 三档阈值自 0.75/0.60 调低为 **0.65/0.50**（§3.3）——同一声纹跨录音相似度可能略低于 0.75 导致未自动关联，调低后提高自动关联成功率，误关联可由「校准已标注」（PRD FR-003-CLUSTER v2.20）手工改回；② WebUI「音频处理流程」面板 `.pipe-io` 改为纵向布局（输入/产出各占一行），输入格式列表按 `_FORMAT_PRIORITY` 优先级排序为 `wav / flac / m4a / mp3 / opus / ogg / webm`（§1.5） |
 
 ---
 

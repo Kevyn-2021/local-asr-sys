@@ -67,8 +67,10 @@ VOICEPRINT_CONFIG = {
     "embedding_model":   "pyannote/embedding",
     "sample_rate":       16000,
     # 三档阈值（余弦相似度，0-1）
-    "threshold_auto":    0.75,   # >= 自动标注
-    "threshold_review":  0.60,   # >= 0.60 且 < 0.75 → "疑似待确认"；< 0.60 → UNKNOWN
+    # v2.25 调低：原 0.75/0.60，实测同一声纹跨录音相似度可能略低于 0.75，
+    # 调低后提高自动关联成功率；误关联可由 Web「校准已标注」手工改回
+    "threshold_auto":    0.65,   # >= 自动标注
+    "threshold_review":  0.50,   # >= 0.50 且 < 0.65 → "疑似待确认"；< 0.50 → UNKNOWN
     # 录入规范
     "enroll_min_duration_s":  60,
     "enroll_max_duration_s":  180,
