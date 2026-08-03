@@ -1023,6 +1023,7 @@ $ bash run.sh
 | v2.26 | 2026-08-03 | **目录结构对齐生产布局**：git 仓库与 MacBook 工程根由"代码平铺"调整为与运行节点一致的 `asr_sys_local/` 包裹结构——代码位于 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以占位文件保留结构（内容属个人数据，不入库）；部署环境（FR-008）中的代码/数据目录路径不变（本就为 `/home/kevin/asr_sys_local/...`）；需求功能无变化，工程细节见 [TDD v2.26](./TDD_local_asr_system.md#6-变更日志) |
 | v2.27 | 2026-08-03 | **文档组织调整**：PRD/TDD 上提至工程总目录 `asr_sys_local/` 一级（与 `asr-local`/`audio_archive`/`audio_inbox` 并列），重命名为 `PRD_local_asr_system.md` / `TDD_local_asr_system.md`；两文档互引索引、`file:///` 绝对路径已同步更新，指向不再失效；需求功能无变化，工程细节见 [TDD v2.27](./TDD_local_asr_system.md#6-变更日志) |
 | v2.28 | 2026-08-03 | **README 英文化上提仓库根**：README 移至仓库根（`asr_sys_local/README.md`）并全文改写为英文，核心传达"本地运行、完全离线、数据不出本机"；仓库 Description（英文文案）需在 GitHub 网页 About 处手动设置（本机无 gh CLI/token）；需求功能无变化，工程细节见 [TDD v2.28](./TDD_local_asr_system.md#6-变更日志) |
+| v2.29 | 2026-08-03 | **git 仓库根外置（README 落仓库根）**：修正 v2.28 的 README 未显示问题——git 仓库根为 `ASR-Local-Thinkpad/`（README.md/.gitignore 在此，GitHub 首页渲染 README），工程总目录 `asr_sys_local/` 保持与运行节点一致；需求功能无变化，工程细节见 [TDD v2.29](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 
