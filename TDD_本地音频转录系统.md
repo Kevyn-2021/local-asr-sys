@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v1.5  
+**版本**: v1.6  
 **日期**: 2026-08-03  
 **状态**: 持续更新
 
@@ -474,7 +474,26 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
 ### 4.7 WebUI 样式踩坑
 - **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
 
-### 4.8 工程组织与部署（v2.19 Review）
+### 4.8 工程组织与部署
+
+- **工程目录平铺（v2.22）**：工程从"部署源套壳"（`scripts/pkg_staging/`）平铺为单层——**工程根 = git 仓库根 = 部署源**，与 ThinkPad 生产布局（`asr-local/` 平铺）一致：
+
+  ```
+  ASR-Local-Thinkpad/            （= git 仓库根 = 部署源）
+  ├── config/        # 全局配置
+  ├── scripts/       # 入口程序（webui / process_inbox / CLI 工具 / 模型下载）
+  ├── src/           # 核心模块（VAD / 说话人分离 / 声纹 / ASR / 数据库 / 归档）
+  ├── src/utils/     # 通用工具（音频 IO / 时间戳 / 哈希）
+  ├── systemd/       # 系统服务单元
+  ├── run.sh         # CLI 主菜单
+  ├── deploy_webui.sh# 部署脚本（LOCAL_ROOT = 工程根）
+  ├── README.md      # 项目说明（强调本地运行、数据不出本机）
+  └── requirements.txt
+  ```
+
+  `deploy_webui.sh` 的 `LOCAL_ROOT` 由 `$(dirname "$0")/pkg_staging` 改为 `$(dirname "$0")`。
+- **run.sh 工程根路径 bug（v2.22 修复）**：`PROJ_ROOT` 原用 `$(cd "$SCRIPT_DIR/.." && pwd)` 多退一层——run.sh 位于工程根时 `..` 指向父目录（ThinkPad 上为 `asr_sys_local` 而非 `asr-local`），导致 `.venv`/`.hf_token` 定位错误、run.sh 实际不可用。改为 `$(cd "$SCRIPT_DIR" && pwd)`（run.sh 与工程根同层）。
+- **GitHub 版本管理（v2.22）**：工程已托管至公开仓库 `Kevyn-2021/local-asr-sys`。MacBook 为**唯一 git 源**；`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型权重/`sample_audio`）；**ThinkPad 不纳入 git**（含机密与运行资产），继续由 `deploy_webui.sh` 同步代码，两者各司其职。
 - **默认路径制造残留目录（v2.21 根治）**：`settings.py` 的默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）只在 `.env` 未加载时生效；而代码里多处 `Path.mkdir(parents=True, exist_ok=True)` 会自动创建这些默认目录——`~/audio_archive`、`~/asr-local/model_cache` 因此各出现过一次并被清理。根源是 CLI 入口（`run.sh`）此前只读 `.hf_token`、不加载 `.env`。v2.21 起 `run.sh` 启动时 `source .env`（`set -a` 导出）并强制注入 `ASR_PROJ_ROOT`，CLI 与 WebUI 共用生产路径。**排查此类残留时看目录名是否为 settings 默认值 + 目录 mtime**。
 - **暂存区与生产区漂移**：MacBook 工程根目录（`ASR-Local-Thinkpad/`）是部署源，但 `deploy_webui.sh` 原先只部署 Web 相关文件，CLI 配套（`run_pipeline.py`/`enroll_voiceprint.py`/`step2_download_models.sh`/`run.sh`）未纳入部署，导致暂存区被改动后与 ThinkPad 生产版本漂移（`src.config.settings` 错误导入、`enroll_voiceprint.py` 中文引号 SyntaxError 等）。v2.19 起部署脚本纳入全部运行时（`config/settings.py` 除外），并新增远端 CLI 导入校验。
 - **一次性过程稿不进部署源**：`step1_setup.sh` 是初装期一次性脚本，路径停留在旧布局（`~/asr-local`、`~/audio_archive`、`model_cache`），不再匹配当前 `~/asr_sys_local/` + `models/` 布局，v2.19 删除；`systemd/asr-webui.service` 与 `install_services.sh` 的 .env 模板同步对齐生产路径（含"用户级 service 不含 User/Group 行"约束）。
@@ -573,6 +592,7 @@ MEMORY_CONFIG = {
 | v2.19 | 2026-08-03 | **总任务行空白修复 + 人物档案保留 + 编号健壮性 + 工程代码 Review 清理**: ① `_status()` 写入判断 `"processing_start_time" not in data` → `not data.get(...)`，修复空闲清理后下次任务"总任务"行永远空白（§1.4）；② 标注回填改为 `get_person()` 判断、仅新建时才 `upsert_person()`，不再清空已填的性别/出生年/关系/备注（§1.6）；③ `next_unknown_label()` 改为扫描全表取 MAX(编号)+1，删除大编号簇后不再 UNIQUE 冲突（§4.5）；④ `clean_text()` 复用 `archive._clean_asr_text` 消除展示层重复实现；⑤ **工程 Review 清理**：修复 `enroll_voiceprint.py` 中文引号 SyntaxError 与 `src.config.settings` 错误导入、移除 `PyAnnoteVad` 遗留别名、pipeline 统一绝对导入、函数内 import 上提、`AUDIO_EXTS`/`BJT`/`db_conn` 去重、`run.sh` banner 旧路径、systemd 单元与 `install_services.sh` 对齐生产路径、`step2_download_models.sh` 对齐 `models/` 目录（§4.8）；⑥ `deploy_webui.sh` 纳入 CLI 配套文件并新增远端导入校验，删除一次性过程稿 `step1_setup.sh`（§4.8） |
 | v2.20 | 2026-08-03 | **声纹标注校准**: ① `db.py` 新增 `unassign_cluster_name()`（清空 assigned_name，编号保留）；② `webui.py` 新增 `apply_cluster_label()` 统一「标注为某人 / 改标他人 / 改回未知」三种操作的回填逻辑（§1.7）；③「声纹簇·标注学习」面板重构——列出全部簇、`st.tabs` 双操作区、改回未知两步确认防误操作（§1.7）；④ 改回未知沿用簇原编号（label 为稳定身份，标注→改回→再标注全程可逆，不产生新编号）（§1.7）；⑤ 数据层实测通过：标注回填、档案保护、改回可逆三路径 PASS |
 | v2.21 | 2026-08-03 | **CLI 环境变量根治（默认路径残留）**: ① `run.sh` 启动时自动 `source .env`（`set -a` 导出生产环境变量）并**强制注入 `ASR_PROJ_ROOT`**，CLI 与 WebUI 共用同一套生产路径（§4.8）；② 根治未加载 `.env` 时 settings 走默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）在 HOME 下自动 `mkdir` 制造残留目录的问题——`~/audio_archive`、`~/asr-local/model_cache` 均已出现过并被清理（§4.8）；③ `.hf_token` 降级为无 `.env` 时的兜底 |
+| v2.22 | 2026-08-03 | **工程平铺重构 + GitHub 版本管理**: ① 目录平铺——`scripts/pkg_staging/` 套壳上提为单层工程根（config/scripts/src/systemd/run.sh/deploy_webui.sh），工程根 = git 仓库根 = 部署源，与 ThinkPad 生产布局一致（§4.8）；② 修复 `run.sh` 的 `PROJ_ROOT` 多退一层 bug（`SCRIPT_DIR/..` → `SCRIPT_DIR`，run.sh 与工程根同层），此前该 bug 使 run.sh 实际不可用（§4.8）；③ 修复 `deploy_webui.sh` 的 `LOCAL_ROOT`（去掉 `pkg_staging` 段）（§4.8）；④ 新增 GitHub 公开仓库 `Kevyn-2021/local-asr-sys`，`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型/`sample_audio`），MacBook 为唯一 git 源、ThinkPad 不纳入 git 继续 deploy 同步（§4.8）；⑤ 新增 README（强调本地运行、完全离线、数据不出本机） |
 
 ---
 
