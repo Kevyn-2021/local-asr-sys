@@ -53,7 +53,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-03-12:40:44"
+UI_VERSION = "2026-08-03-12:58:13"
 
 st.set_page_config(page_title="ASR 本地转录系统", page_icon="🎙️", layout="wide")
 

@@ -27,26 +27,25 @@ Processing happens entirely in memory; the source audio files are never modified
 
 ## Repository Layout
 
-This README sits at the git repository root (so GitHub renders it on the repo home page). The actual project root is `asr_sys_local/`, which mirrors the production layout on the run node (`/home/kevin/asr_sys_local`): the code lives in `asr-local/`, while the data directories are kept as placeholders (their contents are personal data and never committed).
+This README sits at the git repository root (so GitHub renders it on the repo home page). All effective content lives at the top level, mirroring the run node layout (`/home/kevin/asr_sys_local/`): the code lives in `asr-local/` (= deployment source), while the data directories are kept as placeholders (their contents are personal data and never committed).
 
 ```
 local-asr-sys/                # git repository root (this README is rendered here)
 ├── README.md                 # project overview (this file)
 ├── .gitignore                # excludes secrets, audio data, models, etc.
-└── asr_sys_local/            # project root, mirrors the run node layout
-    ├── asr-local/            # code (= deployment source)
-    │   ├── config/           # global configuration (paths, thresholds, model parameters)
-    │   ├── scripts/          # entry points (Web UI, batch processor, CLI tools, model download)
-    │   ├── src/              # core modules (VAD / diarization / voiceprint / ASR / database / archive)
-    │   ├── src/utils/        # shared utilities (audio I/O, timestamps, hashing)
-    │   ├── systemd/          # systemd units (optional, for running as a service)
-    │   ├── run.sh            # CLI main menu launcher
-    │   ├── deploy_webui.sh   # deploy script: syncs code to the run node and restarts the service
-    │   └── requirements.txt
-    ├── audio_inbox/          # data: inbox (drop audio files here; contents not committed)
-    ├── audio_archive/        # data: archived audio / text backups / database (contents not committed)
-    ├── PRD_local_asr_system.md   # product requirements document
-    └── TDD_local_asr_system.md   # technical design document
+├── asr-local/                # code (= deployment source)
+│   ├── config/               # global configuration (paths, thresholds, model parameters)
+│   ├── scripts/              # entry points (Web UI, batch processor, CLI tools, model download)
+│   ├── src/                  # core modules (VAD / diarization / voiceprint / ASR / database / archive)
+│   ├── src/utils/            # shared utilities (audio I/O, timestamps, hashing)
+│   ├── systemd/              # systemd units (optional, for running as a service)
+│   ├── run.sh                # CLI main menu launcher
+│   ├── deploy_webui.sh       # deploy script: syncs code to the run node and restarts the service
+│   └── requirements.txt
+├── audio_inbox/              # data: inbox (drop audio files here; contents not committed)
+├── audio_archive/            # data: archived audio / text backups / database (contents not committed)
+├── PRD_local_asr_system.md   # product requirements document
+└── TDD_local_asr_system.md   # technical design document
 ```
 
 ## Quick Start

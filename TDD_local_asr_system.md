@@ -8,7 +8,7 @@
 > 
 > **本文档的角色**：技术设计文档（TDD），聚焦"如何实现"——技术架构、模型选型、工程实现细节、踩坑记录、配置参考、变更日志。它回答"系统怎么建"。
 > 
-> **配套文档**：产品的需求定义（功能需求、非功能需求、UI 设计、数据模型）见另一份文档 [PRD_local_asr_system.md](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/asr_sys_local/PRD_local_asr_system.md)。
+> **配套文档**：产品的需求定义（功能需求、非功能需求、UI 设计、数据模型）见另一份文档 [PRD_local_asr_system.md](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/PRD_local_asr_system.md)。
 > 
 > **内容不重复原则**：TDD 与 PRD 的内容互不重复。同样的内容只会在一个文档中出现，不会同时出现在两份文档中。两文档通过相互索引引用，而非复制粘贴。这样做的目的是：避免同一内容在多处维护，因漏改某处而导致不一致。
 > 
@@ -340,7 +340,7 @@ i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟�
 - 子进程内独立加载 PyAnnote Pipeline 模型，执行推理后将结果通过 `Queue` 传回
 - 子进程异常退出（退出码非 0）由主进程感知并上报；挂死由外部监控发现
 
-详见 [diarization.py](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/asr_sys_local/asr-local/src/diarization.py)。
+详见 [diarization.py](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/src/diarization.py)。
 
 ### 3.3 声纹识别 — PyAnnote Embedding
 
@@ -476,27 +476,28 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
 
 ### 4.8 工程组织与部署
 
-- **目录结构对齐生产（v2.26 起，v2.29 落位 README）**：工程从"代码平铺根"调整为与 ThinkPad 生产布局**完全一致**的包裹结构——**工程总目录 = `asr_sys_local/`**（与运行节点 `/home/kevin/asr_sys_local` 一致），代码位于 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以 `.gitkeep` 占位随仓库保留（内容属个人数据，不入库）。**git 仓库根在工程总目录外层**（`ASR-Local-Thinkpad/`），仓库根级放 `README.md` 与 `.gitignore`——GitHub 仅在仓库根渲染 README，故 README 必须落在此处才能显示（v2.29）：
+- **目录结构扁平对齐生产（v2.26 起，v2.30 最终扁平）**：所有有效内容位于 **git 仓库根一级**——README.md、.gitignore、代码目录 `asr-local/`、数据目录 `audio_archive/`、`audio_inbox/`（.gitkeep 占位，内容不入库）、PRD/TDD 文档。仓库根内容与运行节点 `/home/kevin/asr_sys_local/` **一一对应**（代码目录 ↔ 运行节点 `asr_sys_local/asr-local/`，数据目录 ↔ 运行节点同名数据目录）。GitHub 仅在仓库根渲染 README，README 位于根一级（v2.29/v2.30）：
 
   ```
-  ASR-Local-Thinkpad/               （= git 仓库根；README.md/.gitignore 在此，GitHub 首页渲染 README）
-  └── asr_sys_local/                （= 工程总目录，与运行节点 /home/kevin/asr_sys_local 一致）
-      ├── asr-local/                （= 部署源，含全部代码）
-      │   ├── config/        # 全局配置
-      │   ├── scripts/       # 入口程序（webui / process_inbox / CLI 工具 / 模型下载）
-      │   ├── src/           # 核心模块（VAD / 说话人分离 / 声纹 / ASR / 数据库 / 归档）
-      │   ├── src/utils/     # 通用工具（音频 IO / 时间戳 / 哈希）
-      │   ├── systemd/       # 系统服务单元
-      │   ├── run.sh         # CLI 主菜单（PROJ_ROOT = asr-local）
-      │   ├── deploy_webui.sh# 部署脚本（LOCAL_ROOT = asr-local）
-      │   └── requirements.txt
-      ├── audio_inbox/       # 数据：收件箱（.gitkeep 占位，内容不入库）
-      ├── audio_archive/     # 数据：归档与数据库（.gitkeep 占位，内容不入库）
-      ├── PRD_local_asr_system.md    # 需求文档
-      └── TDD_local_asr_system.md    # 技术设计文档
+  ASR-Local-Thinkpad/               （= git 仓库根，GitHub 首页渲染 README；内容与运行节点 /home/kevin/asr_sys_local 一致）
+  ├── README.md                     # 项目说明（英文）
+  ├── .gitignore                    # 排除机密/数据/模型
+  ├── asr-local/                    （= 部署源，含全部代码）
+  │   ├── config/        # 全局配置
+  │   ├── scripts/       # 入口程序（webui / process_inbox / CLI 工具 / 模型下载）
+  │   ├── src/           # 核心模块（VAD / 说话人分离 / 声纹 / ASR / 数据库 / 归档）
+  │   ├── src/utils/     # 通用工具（音频 IO / 时间戳 / 哈希）
+  │   ├── systemd/       # 系统服务单元
+  │   ├── run.sh         # CLI 主菜单（PROJ_ROOT = asr-local）
+  │   ├── deploy_webui.sh# 部署脚本（LOCAL_ROOT = asr-local）
+  │   └── requirements.txt
+  ├── audio_inbox/       # 数据：收件箱（.gitkeep 占位，内容不入库）
+  ├── audio_archive/     # 数据：归档与数据库（.gitkeep 占位，内容不入库）
+  ├── PRD_local_asr_system.md    # 需求文档
+  └── TDD_local_asr_system.md    # 技术设计文档
   ```
 
-  `deploy_webui.sh` 的 `LOCAL_ROOT` 基于脚本自身位置（`$(dirname "$0")`），随代码整体移入 `asr-local/` 后自动指向部署源根；`REMOTE_ROOT` 硬编码 `/home/kevin/asr_sys_local/asr-local`，两端目标一致，部署逻辑无需改动。
+  `deploy_webui.sh` 的 `LOCAL_ROOT` 基于脚本自身位置（`$(dirname "$0")`），位于 `asr-local/` 内自动指向部署源根；`REMOTE_ROOT` 硬编码 `/home/kevin/asr_sys_local/asr-local`，两端目标一致，部署逻辑无需改动。
 - **run.sh 工程根路径 bug（v2.22 修复）**：`PROJ_ROOT` 原用 `$(cd "$SCRIPT_DIR/.." && pwd)` 多退一层——run.sh 位于工程根时 `..` 指向父目录（ThinkPad 上为 `asr_sys_local` 而非 `asr-local`），导致 `.venv`/`.hf_token` 定位错误、run.sh 实际不可用。改为 `$(cd "$SCRIPT_DIR" && pwd)`（run.sh 与工程根同层）。
 - **GitHub 版本管理（v2.22）**：工程已托管至公开仓库 `Kevyn-2021/local-asr-sys`。MacBook 为**唯一 git 源**；`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型权重/`sample_audio`）；**ThinkPad 不纳入 git**（含机密与运行资产），继续由 `deploy_webui.sh` 同步代码，两者各司其职。
 - **部署地址可配置（v2.23）**：ThinkPad 常随使用场景切换网络（家 `192.168.3.x` / 办公室 `10.44.x.x`），`deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<IP>` 环境变量覆盖（默认当前地址 `kevin@10.44.21.23`）。v2.23 部署验证：平铺重构后 MacBook 与 ThinkPad **18 个运行时文件 md5 全量一致**，`run.sh` 的 `PROJ_ROOT` 修复在运行节点生效（`/home/kevin/asr_sys_local/asr-local`）。
@@ -605,6 +606,7 @@ MEMORY_CONFIG = {
 | v2.27 | 2026-08-03 | **文档上提一级目录 + 重命名**: ① PRD/TDD 由 `asr_sys_local/asr-local/` 移出至一级目录 `asr_sys_local/`，与 `asr-local`/`audio_archive`/`audio_inbox` 并列，并重命名为 **`PRD_local_asr_system.md` / `TDD_local_asr_system.md`**（英文文件名，避免中文文件名跨平台/链接转义问题）；② 全文索引同步——PRD↔TDD 互引链接、`file:///` 绝对路径（含 diarization.py 代码引用路径补 `asr_sys_local/asr-local` 段）全部更新为新文件名与新路径（§4.8）；③ README 目录树同步（§4.8） |
 | v2.28 | 2026-08-03 | **README 上提仓库根 + 英文化**: ① README 由 `asr_sys_local/asr-local/` 移至仓库根 `asr_sys_local/README.md`（GitHub 仅在仓库根展示 README）；② 全文改写为英文（本地运行、数据不出本机、离线推理为核心理念）；③ 目录树同步——README/PRD/TDD 并列一级目录（§4.8）；④ GitHub 仓库 **Description（英文）需在网页 About 设置**——本机无 gh CLI/GitHub token，无法命令行设置，提供文案待用户粘贴 |
 | v2.29 | 2026-08-03 | **git 仓库根外置，README 落仓库根**: ① v2.28 将 README 放在 `asr_sys_local/README.md`，但 GitHub 只在 **git 仓库根**渲染 README，故仍不显示——本次将 git 仓库根与工程总目录解耦：**git 仓库根 = `ASR-Local-Thinkpad/`**（README.md/.gitignore 在此，GitHub 首页渲染 README），**工程总目录 = `asr_sys_local/`**（与运行节点一致，含 asr-local/audio_archive/audio_inbox/PRD/TDD）（§4.8）；② README 目录树改为以仓库根为根绘制 |
+| v2.30 | 2026-08-03 | **仓库扁平化（去除 asr_sys_local 包裹层）**: ① git 仓库根由"ASR-Local-Thinkpad + asr_sys_local 两级"扁平为**一级**——README.md/.gitignore/代码目录 `asr-local/`/数据目录 `audio_archive|audio_inbox`（.gitkeep 占位）/PRD/TDD 全部位于仓库根，与运行节点 `/home/kevin/asr_sys_local/` 内容一一对应（§4.8）；② `deploy_webui.sh` LOCAL_ROOT（脚本自定位）与 `REMOTE_ROOT` 硬编码均不受影响，ThinkPad 生产路径零改动；③ README 目录树、§4.8 结构图同步为扁平结构 |
 
 ---
 

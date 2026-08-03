@@ -9,7 +9,7 @@
 > 
 > **本文档的角色**：产品需求文档（PRD），聚焦"需求是什么"——功能需求、非功能需求、UI 设计、数据模型。它回答"系统要做什么"。
 > 
-> **配套文档**：工程实现细节（技术架构、模型选型、各模块实现细节、经验教训、配置参考、变更日志）见另一份文档 [TDD_local_asr_system.md](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/asr_sys_local/TDD_local_asr_system.md)。
+> **配套文档**：工程实现细节（技术架构、模型选型、各模块实现细节、经验教训、配置参考、变更日志）见另一份文档 [TDD_local_asr_system.md](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/TDD_local_asr_system.md)。
 > 
 > **内容不重复原则**：PRD 与 TDD 的内容互不重复。同样的内容只会在一个文档中出现，不会同时出现在两份文档中。两文档通过相互索引引用，而非复制粘贴。这样做的目的是：避免同一内容在多处维护，因漏改某处而导致不一致。
 > 
@@ -1024,6 +1024,7 @@ $ bash run.sh
 | v2.27 | 2026-08-03 | **文档组织调整**：PRD/TDD 上提至工程总目录 `asr_sys_local/` 一级（与 `asr-local`/`audio_archive`/`audio_inbox` 并列），重命名为 `PRD_local_asr_system.md` / `TDD_local_asr_system.md`；两文档互引索引、`file:///` 绝对路径已同步更新，指向不再失效；需求功能无变化，工程细节见 [TDD v2.27](./TDD_local_asr_system.md#6-变更日志) |
 | v2.28 | 2026-08-03 | **README 英文化上提仓库根**：README 移至仓库根（`asr_sys_local/README.md`）并全文改写为英文，核心传达"本地运行、完全离线、数据不出本机"；仓库 Description（英文文案）需在 GitHub 网页 About 处手动设置（本机无 gh CLI/token）；需求功能无变化，工程细节见 [TDD v2.28](./TDD_local_asr_system.md#6-变更日志) |
 | v2.29 | 2026-08-03 | **git 仓库根外置（README 落仓库根）**：修正 v2.28 的 README 未显示问题——git 仓库根为 `ASR-Local-Thinkpad/`（README.md/.gitignore 在此，GitHub 首页渲染 README），工程总目录 `asr_sys_local/` 保持与运行节点一致；需求功能无变化，工程细节见 [TDD v2.29](./TDD_local_asr_system.md#6-变更日志) |
+| v2.30 | 2026-08-03 | **仓库扁平化（去除 asr_sys_local 包裹层）**：git 仓库根一级直接放置全部有效内容——代码目录 `asr-local/`、数据目录 `audio_archive/`/`audio_inbox/`（占位）、README.md、PRD/TDD、.gitignore，与运行节点 `/home/kevin/asr_sys_local/` 内容一一对应；ThinkPad 生产路径不变（`deploy_webui.sh` 两端逻辑零改动）；需求功能无变化，工程细节见 [TDD v2.30](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 
