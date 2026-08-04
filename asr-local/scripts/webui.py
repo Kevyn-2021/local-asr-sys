@@ -45,18 +45,21 @@ from src.db import (
     connect,
     get_cluster_label,
     get_person,
+    init_db,
     list_clusters_view,
     list_persons,
     list_voiceprints,
+    set_cluster_skip,
     unassign_cluster_name,
     update_transcripts_speaker,
     upsert_person,
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-05-00:36:23"
+UI_VERSION = "2026-08-05-01:11:22"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
+init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）
 
 # ── KVI 风格系统 ──────────────────────────────────────────────
 st.markdown("""
@@ -1364,8 +1367,8 @@ elif page == "声纹库 · 数据库":
             unsafe_allow_html=True,
         )
 
-    # ── 声纹簇标注（FR-003-CLUSTER + v2.20 标注校准）：标注为某人 / 校准已标注 ──
-    c = panel("声纹簇 · 标注学习", "自动识别 + 手工校准：认不出的标注为某人；标错的改标他人或改回未知")
+    # ── 声纹簇标注（FR-003-CLUSTER + v2.20 标注校准 + v2.43 不标注）：标注为某人 / 校准已标注 / 不标注 ──
+    c = panel("声纹簇 · 标注学习", "自动识别 + 手工校准：认不出的标注为某人；标错的改标他人或改回未知；陌生人设为不标注保持原编号")
     with c:
         clusters = list_clusters_view()
         if not clusters:
@@ -1379,17 +1382,25 @@ elif page == "声纹库 · 数据库":
         else:
             # 全部簇一览（含已标注）：编号是簇的稳定身份，标注列显示姓名或"（未标注）"
             cl_df = pd.DataFrame(clusters)
-            cl_df["标注"] = cl_df["assigned_name"].fillna("（未标注）")
+
+            def _cell(r):
+                if r["assigned_name"]:
+                    return r["assigned_name"]
+                return "🚫 不标注" if r.get("skip_label") else "（未标注）"
+
+            cl_df["标注"] = cl_df.apply(_cell, axis=1)
             view = cl_df[["cluster_id", "label", "标注", "sample_count"]].copy()
             view.columns = ["ID", "编号", "标注为", "学习样本数"]
             st.dataframe(view, width='stretch', hide_index=True)
 
-            unassigned = [c for c in clusters if not c.get("assigned_name")]
+            unassigned = [c for c in clusters
+                          if not c.get("assigned_name") and not c.get("skip_label")]
             assigned = [c for c in clusters if c.get("assigned_name")]
             persons = list_persons()
             known_names = [p["person_name"] for p in persons]
 
-            tab_mark, tab_cal = st.tabs(["✏️ 标注为某人", "🔧 校准已标注"])
+            tab_mark, tab_cal, tab_skip = st.tabs(
+                ["✏️ 标注为某人", "🔧 校准已标注", "🚫 不标注"])
 
             # ── Tab 1：未标注 → 标注为某人 ──
             with tab_mark:
@@ -1477,6 +1488,53 @@ elif page == "声纹库 · 数据库":
                                 f"已改回未知：{cur_label}（原标注 {cur_name}），"
                                 f"更新 {n_db} 条转录记录、{n_txt} 个文本备份文件。")
                             st.session_state.pop("unassign_cid", None)
+                            st.rerun()
+
+            # ── Tab 3：不标注（v2.43）——陌生人保持原编号，不参与标注流程；可恢复 ──
+            with tab_skip:
+                st.markdown(
+                    "<div style='font-size:0.85rem;color:var(--fg-3);margin:4px 0 2px 0;'>"
+                    "有些陌生人不值得标注：设为「不标注」后保持原编号（unknown_XXXX），"
+                    "不再出现在「标注为某人」列表；随时可恢复标注。"
+                    "（不标注只隐藏标注入口，不影响声纹匹配与学习）</div>",
+                    unsafe_allow_html=True,
+                )
+                all_un = [c for c in clusters if not c.get("assigned_name")]
+                normal_un = [c for c in all_un if not c.get("skip_label")]
+                skipped = [c for c in all_un if c.get("skip_label")]
+                if not all_un:
+                    st.info("当前没有未标注编号")
+                else:
+                    c_skip, c_restore = st.columns([2, 2])
+                    with c_skip:
+                        opt_skip = st.multiselect(
+                            "设为不标注（保持原编号）",
+                            [f"{c['label']}（未标注）" for c in normal_un],
+                            key="skip_sel",
+                        )
+                    with c_restore:
+                        opt_restore = st.multiselect(
+                            "恢复标注（回到「标注为某人」）",
+                            [f"{c['label']}（不标注中）" for c in skipped],
+                            key="skip_restore_sel",
+                        )
+                    if st.button("🚫 设为不标注", key="btn_skip"):
+                        if not opt_skip:
+                            st.warning("请先勾选要设为不标注的编号")
+                        else:
+                            id_by = {f"{c['label']}（未标注）": c["cluster_id"] for c in normal_un}
+                            for o in opt_skip:
+                                set_cluster_skip(id_by[o], True)
+                            st.success(f"已将 {len(opt_skip)} 个编号设为不标注（保持原编号）。")
+                            st.rerun()
+                    if st.button("↩️ 恢复标注", key="btn_skip_restore"):
+                        if not opt_restore:
+                            st.warning("请先勾选要恢复的编号")
+                        else:
+                            id_by2 = {f"{c['label']}（不标注中）": c["cluster_id"] for c in skipped}
+                            for o in opt_restore:
+                                set_cluster_skip(id_by2[o], False)
+                            st.success(f"已恢复 {len(opt_restore)} 个编号的标注。")
                             st.rerun()
 
     # ── 人物档案（需求 4）：姓名/性别/出生年/关系/备注 ──

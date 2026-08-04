@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS speaker_clusters (
     label           TEXT NOT NULL UNIQUE,        -- unknown_0001 / unknown_0002 … 全局递增不复用
     embedding       BLOB NOT NULL,               -- 该簇的聚合声纹向量（float32）
     assigned_name   TEXT,                        -- 用户标注的姓名（关联 persons.person_name）
+    skip_label      INTEGER DEFAULT 0,           -- v2.43：1 = 不标注（保持原编号，不参与标注流程）
     sample_count    INTEGER DEFAULT 1,           -- 累积样本数（用于增量平均学习）
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -148,6 +149,11 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 def init_db(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
+        # v2.43 迁移：老库 speaker_clusters 补充 skip_label（不标注）列
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(speaker_clusters)")}
+        if "skip_label" not in cols:
+            conn.execute(
+                "ALTER TABLE speaker_clusters ADD COLUMN skip_label INTEGER DEFAULT 0")
 
 
 # ====== 去重检查 ======
@@ -217,17 +223,18 @@ def next_unknown_label(db_path: Path | None = None) -> str:
 
 
 def load_all_clusters(db_path: Path | None = None) -> list[dict]:
-    """返回 [{cluster_id, label, assigned_name, sample_count, vec}, ...]"""
+    """返回 [{cluster_id, label, assigned_name, skip_label, sample_count, vec}, ...]"""
     import numpy as np
     out = []
     with connect(db_path) as conn:
         for row in conn.execute(
-                "SELECT cluster_id, label, assigned_name, sample_count, embedding "
+                "SELECT cluster_id, label, assigned_name, skip_label, sample_count, embedding "
                 "FROM speaker_clusters ORDER BY cluster_id"):
             out.append({
                 "cluster_id": int(row["cluster_id"]),
                 "label": str(row["label"]),
                 "assigned_name": row["assigned_name"],
+                "skip_label": int(row["skip_label"] or 0),
                 "sample_count": int(row["sample_count"]),
                 "vec": np.frombuffer(bytes(row["embedding"]), dtype=np.float32),
             })
@@ -271,6 +278,18 @@ def unassign_cluster_name(cluster_id: int, db_path: Path | None = None) -> None:
             "UPDATE speaker_clusters SET assigned_name=NULL, "
             "updated_at=CURRENT_TIMESTAMP WHERE cluster_id=?",
             (cluster_id,))
+
+
+def set_cluster_skip(cluster_id: int, skip: bool,
+                     db_path: Path | None = None) -> None:
+    """不标注标记（v2.43）：skip=True 设为「不标注」——保持原编号 unknown_XXXX，
+    仅从「标注为某人」流程中隐藏；skip=False 恢复可标注。
+    不改 label/embedding，不触发 transcripts 回填（编号未变，无需回填）。"""
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE speaker_clusters SET skip_label=?, updated_at=CURRENT_TIMESTAMP "
+            "WHERE cluster_id=?",
+            (1 if skip else 0, cluster_id))
 
 
 def get_cluster_label(cluster_id: int, db_path: Path | None = None) -> str | None:
@@ -321,7 +340,7 @@ def list_clusters_view(db_path: Path | None = None) -> list[dict]:
     """Web 展示用：不含向量，含档案关联"""
     with connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT c.cluster_id, c.label, c.assigned_name, c.sample_count, "
+            "SELECT c.cluster_id, c.label, c.assigned_name, c.skip_label, c.sample_count, "
             "c.created_at, p.gender, p.relation "
             "FROM speaker_clusters c "
             "LEFT JOIN persons p ON p.person_name = c.assigned_name "

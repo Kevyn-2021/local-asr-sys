@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v2.42  
+**版本**: v2.43  
 **日期**: 2026-08-04  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -220,7 +220,7 @@
   4. 三级都不中 → pipeline 调 `register_new_cluster` 全局递增新建簇
 - **增量学习**: 匹配到老簇时顺手做"增量平均"更新簇向量（持续学习），`sample_count` 累积
 - **编号规则**: `next_unknown_label = MAX(已用编号) + 1`，四位；已被指派姓名的编号也不复用（标注 0002=某人后，下次从 0003 继续）
-- **Web 标注界面**: 声纹库·数据库页「声纹簇·标注学习」面板，**列出全部簇**（编号 / 标注为 / 学习样本数；标注列显示姓名或"（未标注）"），分两个操作区（`st.tabs`）：①「标注为某人」——把未标注编号标注为新人或已有姓名；②「校准已标注」——纠正自动标注（改标为他人 / 改回未知，v2.20）。标注后系统自动更新显示层映射，同时提供「确认标注并回填」按钮——用户点击后，系统批量更新 `transcripts` 表 `speaker` 字段（大小写不敏感匹配，兼容旧版 `UNKNOWN_XX` 格式），并扫描 `text_backups/` 目录下所有 `.txt`/`.json` 文件中的说话人标签进行替换。标注即 `assign_cluster_name` + 自动建人物档案（见 FR-010）
+- **Web 标注界面**: 声纹库·数据库页「声纹簇·标注学习」面板，**列出全部簇**（编号 / 标注为 / 学习样本数；标注列显示姓名、"（未标注）"或"🚫 不标注"），分三个操作区（`st.tabs`）：①「标注为某人」——把未标注编号标注为新人或已有姓名；②「校准已标注」——纠正自动标注（改标为他人 / 改回未知，v2.20）；③「不标注」（v2.43）——陌生人不值得标注时设为**不标注**：**保持原编号** `unknown_XXXX`，从「标注为某人」列表隐藏，不参与标注流程但**照常参与声纹匹配与学习**；可随时恢复标注。标注后系统自动更新显示层映射，同时提供「确认标注并回填」按钮——用户点击后，系统批量更新 `transcripts` 表 `speaker` 字段（大小写不敏感匹配，兼容旧版 `UNKNOWN_XX` 格式），并扫描 `text_backups/` 目录下所有 `.txt`/`.json` 文件中的说话人标签进行替换。标注即 `assign_cluster_name` + 自动建人物档案（见 FR-010）
 - **标注即全局生效（显示层映射 + 存量数据回填）**:
   - **显示层映射（主机制，覆盖所有数据库记录）**：数据库 `transcripts.speaker` 始终存原始标签（注册人姓名 / `unknown_XXXX` 编号），不做回填；Web UI 显示层（webui.py `speaker_display_map()` / `disp_speaker()`）把 `unknown_XXXX` 经 `speaker_clusters.assigned_name` 映射为标注姓名展示。用户标注一次，处理记录页（最近处理 / 片段记录 / 片段详情）与搜索页结果中该编号的**所有历史片段**（无论标注前还是标注后入库）自动显示姓名，不再显示 unknown。这是最轻量、最彻底的方案——无需修改数据库，所有展示层统一生效（见 §8.1.4、§8.2 页 2/页 4）
   - **存量数据回填（辅助机制，用于外部文件）**：标注时同时调用 `update_transcripts_speaker()` 更新 `transcripts` 表 `speaker` 字段（大小写不敏感匹配，兼容旧版 `UNKNOWN_XX` 格式），并调用 `update_txt_files_speaker()` 扫描 `text_backups/` 目录下所有 `.txt`/`.json` 文件中的说话人标签。两种机制并存：显示层映射覆盖所有 Web UI 展示，存量回填确保外部文件（TXT/JSON）中的标签也同步更新。详见 §8.1.4
@@ -548,6 +548,7 @@ CREATE TABLE speaker_clusters (
     label                   TEXT NOT NULL UNIQUE,    -- unknown_0001 式四位编号，全局递增、不复用
     embedding               BLOB NOT NULL,           -- 聚合声纹向量 (float32)，匹配命中后增量平均持续学习
     assigned_name           TEXT,                    -- 用户标注的姓名，NULL = 纯 unknown
+    skip_label              INTEGER DEFAULT 0,       -- 1 = 不标注（v2.43：保持原编号，不参与标注流程）
     sample_count            INTEGER DEFAULT 0        -- 累积样本数
 );
 
@@ -695,7 +696,7 @@ END;
 | 标注声纹数 | `SELECT COUNT(DISTINCT assigned_name) FROM speaker_clusters WHERE assigned_name IS NOT NULL`（按唯一姓名去重——如 unknown_0001/0002/0003 都标注为 KevinZH，计数为 1 而非 3） |
 | 录入人员数 | `SELECT COUNT(*) FROM persons`（人物档案人数） |
 | 声纹列表 | `SELECT person_name, enrolled_at, ... FROM voiceprints` |
-| 声纹簇列表（编号/标注为/学习样本数） | `SELECT label, assigned_name, sample_count FROM speaker_clusters`（FR-003-CLUSTER） |
+| 声纹簇列表（编号/标注为/学习样本数/不标注） | `SELECT label, assigned_name, skip_label, sample_count FROM speaker_clusters`（FR-003-CLUSTER） |
 | 人物档案列表 | `SELECT p.person_name, gender, birth_year, relation, note, CASE WHEN EXISTS (SELECT 1 FROM speaker_clusters sc WHERE sc.assigned_name = p.person_name) THEN 1 ELSE 0 END AS has_voiceprint FROM persons p ORDER BY created_at`（FR-010；has_voiceprint 自动判断该人物是否已有声纹簇标注） |
 
 #### 8.1.4 转录记录与搜索（来源：SQLite 数据库 `transcripts` 表 + FTS5 全文索引）
@@ -852,7 +853,7 @@ END;
 回答：**"录了哪些人？未知说话人攒了多少、都是谁？数据库怎么组织的？"**
 
 - 面板 1「声纹怎么来的」：用一段话讲清**不需要专门录入**——处理音频时系统自动从片段抓取每个说话人的声纹记为 `unknown_XXXX`，用户标注姓名后系统持续学习、越认越准（"你标注 → 系统学习 → 下次自动认出"）；不再引导命令行录入（`enroll_voiceprint.py` 不再作为主流程）
-- 面板 2「声纹簇·标注学习」：列出**全部声纹簇**（编号 / 标注为 / 学习样本数），分两个操作区：「标注为某人」（未标注编号 → 姓名）与「校准已标注」（改标为他人 / 改回未知，含两步确认）；标注即写回 `speaker_clusters.assigned_name` 并自动建人物档案（FR-003-CLUSTER）
+- 面板 2「声纹簇·标注学习」：列出**全部声纹簇**（编号 / 标注为 / 学习样本数），分三个操作区：「标注为某人」（未标注编号 → 姓名，不标注编号不出现）、「校准已标注」（改标为他人 / 改回未知，含两步确认）与「不标注」（陌生人设为不标注保持原编号 / 恢复标注，支持批量）；标注即写回 `speaker_clusters.assigned_name` 并自动建人物档案（FR-003-CLUSTER）
 - 面板 3「人物档案」：档案列表 + 新增/编辑表单（姓名/性别/出生年/与我的关系/备注/是否已标注声纹），与声纹按姓名关联（FR-010）。"是否已标注声纹"列自动判断——若 `speaker_clusters.assigned_name` 中存在该姓名则显示"是"，否则"否"
 - 面板 4「数据库怎么组织的」：先用三行自然语言讲清各表各存什么，再附两个折叠区——「查看建表语句」（自定义 `<pre>` 紧凑排版）和「查看示例数据」（最近 3 条 JSON）
 
@@ -1036,6 +1037,7 @@ $ bash run.sh
 | v2.40 | 2026-08-05 | **顶部品牌改版 + 页签选中态去背景（FR-008 UI）**：① 品牌名 **ASR 本地转录系统 → Local ASR System**（英文），删除左侧暖赭小方块（无意义装饰）；② 品牌块（标题 + 北京时间）整体右移 0.5rem，不再贴左边界；③ 页签选中态**去掉背景色**——只保留加粗暖赭文字，无背景块；④ 浏览器标签页标题同步改 Local ASR System；工程细节见 [TDD v2.40](./TDD_local_asr_system.md#6-变更日志) |
 | v2.41 | 2026-08-05 | **顶部导航条单行布局（FR-008 UI）**：① 品牌名 **Local ASR System 字号缩小至与面板标题一致**（1.05rem / 600，同「收件箱 · 手动处理」）；② **北京时间移到第一行**，与品牌名同行显示（字号 0.82rem 不变）；③ **导航整体右移 12px**（radiogroup 左边距 0.75rem）；④ 顶栏单行放得下，品牌与导航垂直居中对齐；工程细节见 [TDD v2.41](./TDD_local_asr_system.md#6-变更日志) |
 | v2.42 | 2026-08-05 | **移除 Qwen3-ASR-0.6B（FR-004）**：① 删除 ThinkPad 本地模型 `models/Qwen3-ASR-0.6B-hf`（1.5G）与 HF 缓存残留指针；② 清理当前状态描述中的 0.6B 对比（§6.1 技术栈模型条目、§8.2 模型说明），系统只保留 **Qwen3-ASR-1.7B** 唯一 ASR 模型；③ 变更日志历史条目保留（记录升级过程，不篡改历史）；工程细节见 [TDD v2.42](./TDD_local_asr_system.md#6-变更日志) |
+| v2.43 | 2026-08-05 | **声纹簇「不标注」（FR-003-CLUSTER）**：① `speaker_clusters` 新增 `skip_label` 列（0/1，老库自动迁移）；② Web「声纹簇·标注学习」面板新增**第三个操作区「不标注」**——陌生人设为不标注后**保持原编号** `unknown_XXXX`，从「标注为某人」列表隐藏，**照常参与声纹匹配与学习**；③ 支持批量设为不标注 / 恢复标注，总览表格标注列显示"🚫 不标注"；④ 不标注不触发任何回填（编号未变）；工程细节见 [TDD v2.43](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 

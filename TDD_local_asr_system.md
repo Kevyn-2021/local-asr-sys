@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.42  
+**版本**: v2.43  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -184,9 +184,10 @@ def apply_cluster_label(cluster_id, target):
 - **边界说明**：若同一姓名被标到多个簇，改回/改标会按姓名全局替换（UI 已提示"该姓名的记录将改回编号"）——属合理近似，用户可随后逐个再标注。
 
 **UI（「声纹簇·标注学习」面板，v2.20）**：
-- 顶部表格列出**全部簇**（ID / 编号 / 标注为 / 学习样本数），标注列显示姓名或"（未标注）"
-- `st.tabs` 两个操作区：①「✏️ 标注为某人」——未标注编号 → 姓名（原「确认标注并回填」）；②「🔧 校准已标注」——改标为他人，或「改回未知（沿用编号 {label}）」
+- 顶部表格列出**全部簇**（ID / 编号 / 标注为 / 学习样本数），标注列显示姓名、"（未标注）"或"🚫 不标注"（v2.43）
+- `st.tabs` 三个操作区：①「✏️ 标注为某人」——未标注且未跳过编号 → 姓名（原「确认标注并回填」；不标注编号不出现）；②「🔧 校准已标注」——改标为他人，或「改回未知（沿用编号 {label}）」；③「🚫 不标注」（v2.43）——**陌生人设为不标注**：保持原编号 `unknown_XXXX`，两个多选框分别批量「设为不标注」/「恢复标注」
 - 改回未知为**两步确认**（`st.session_state["unassign_cid"]`）：首次点击仅记录待确认簇 ID 并显示警告，再次点「确认改回」才执行，防误操作
+- **不标注语义（v2.43）**：`skip_label=1` 是独立于标注的标记——不写 `assigned_name`、不改 `label`/`embedding`，**不触发任何 transcripts 回填**（编号未变）；匹配层（`voiceprint.py`）照常加载并学习该簇（`load_all_clusters` 仍返回全部簇）；「标注为某人」列表按 `NOT assigned_name AND NOT skip_label` 过滤；恢复标注即 `set_cluster_skip(cid, False)`，编号回到标注列表、可随时标注（标注→改回→再标注仍全程可逆）
 
 ---
 
@@ -661,6 +662,7 @@ MEMORY_CONFIG = {
 | v2.40 | 2026-08-05 | **顶部品牌改版 + 页签选中态去背景（webui.py §4.7 / PRD §8.2）**: ① 品牌名 `ASR 本地转录系统` → **`Local ASR System`**，删除 `.title-dot` 暖赭小方块（HTML span + CSS 一并移除），`st.set_page_config(page_title=...)` 同步改英文；② 品牌块右移——`.topbar-title` 增加 `padding-left: 0.5rem`（标题与北京时间整体右移，不贴左边界）；③ 页签选中态去背景——`button[aria-checked="true"]` 的 `background` 改 `transparent !important`（移除 `--accent-soft` 背景与 accent 边框色），保留加粗暖赭文字（`color: var(--accent); font-weight: 600`）；④ 部署验证：无头 Chrome 实测选中按钮 `backgroundColor=rgba(0,0,0,0)`、品牌文本为 Local ASR System、吸顶回归正常 |
 | v2.41 | 2026-08-05 | **顶部导航条单行布局（webui.py §4.7 / PRD §8.2）**: ① **品牌字号与面板标题一致**——`.topbar-brand` 1.45rem/700 → **1.05rem/600**（同 `.panel-title`「收件箱 · 手动处理」）；② **北京时间移到第一行**——`.topbar-title` 由 `flex-direction: column` 改 **`row` + `align-items: baseline` + `gap: 12px` + `white-space: nowrap`**，时间字号 0.82rem 不变；③ **导航整体右移 12px**——`div[role="radiogroup"]` 加 `margin-left: 0.75rem`（列比保持 1.2:1.8）；④ 单行可行性实测：品牌文字 1.05rem≈135px + 时间≈194px ≈375px < 品牌列 360px、导航组 481px < 导航列 548px，放得下不换行；⑤ 部署验证：品牌/时间同行、导航未溢出列宽、无横向滚动、吸顶正常 |
 | v2.42 | 2026-08-05 | **移除 Qwen3-ASR-0.6B（ThinkPad 模型清理 / settings.py / PRD §6.1、§8.2）**: ① **删除 ThinkPad 本地模型**——`models/Qwen3-ASR-0.6B-hf`（1.5G，`HF_HOME`=models 由 .env 覆盖）+ `~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-0.6B-hf` 残留指针（12K），删除后全盘 `find -iname "*0.6B*"` 无残留，`models/Qwen3-ASR-1.7B-hf`（4.1G）完好；② **settings.py 注释清理**——"v2.31 升级 0.6B → 1.7B"改"v2.31 定稿 1.7B（v2.42 起移除 0.6B）"，并手动 scp 同步到 ThinkPad（settings.py 不随 deploy 部署，v2.37 约定）；③ **PRD 当前状态描述清理**——§6.1 模型条目移除 0.6B 对比、§8.2 技术栈表"优于 0.6B"改为"表现可靠"；④ 变更日志历史条目保留（v1.2/v2.18/v2.31 等为升级过程记录，不篡改历史） |
+| v2.43 | 2026-08-05 | **声纹簇「不标注」（db.py §1.7 / webui.py / PRD FR-003-CLUSTER）**: ① **数据层**——`speaker_clusters` 新增 `skip_label INTEGER DEFAULT 0`（SCHEMA_SQL + `init_db()` 内 PRAGMA 检查 + `ALTER TABLE` 老库迁移），新增 `set_cluster_skip(cluster_id, skip)`（不写 assigned_name/label/embedding，不触发回填），`load_all_clusters()`/`list_clusters_view()` 查询补 `skip_label`；② **UI**——「声纹簇·标注学习」新增第三个 tab「🚫 不标注」：两个多选框（设为不标注 / 恢复标注）+ 按钮批量执行，总览表格标注列显示"🚫 不标注"；「标注为某人」列表按 `NOT assigned_name AND NOT skip_label` 过滤；③ **语义**——不标注簇保持原编号、照常参与匹配学习（匹配层不过滤），恢复标注即回到标注列表，全程可逆；④ **启动迁移**——webui.py 顶部调用 `init_db()`（幂等），老库重启即补列；⑤ 部署验证：服务 active + `PRAGMA table_info` 确认 `skip_label` 存在 + 无头 Chrome 渲染新 tab |
 
 ---
 
