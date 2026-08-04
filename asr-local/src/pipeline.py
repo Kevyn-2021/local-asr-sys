@@ -170,6 +170,8 @@ class AsrPipeline:
             return PipelineResult(False, error_msg=f"VAD 失败: {e}")
 
         # (5) Diarization — 运行在完整原始音频，时间戳基准统一
+        # v2.31：传入 VAD 语音段，diarization 内部先拼接（切除静音）加速 segmentation，
+        #        分离结果时间戳自动映射回原始时间轴（对下游无感）
         # 长音频警告：>= 30 分钟的音频在低内存环境下有 OOM 风险
         if duration_s >= 1800:
             log.warning("[pipeline] 音频时长 %.1f 分钟，说话人分离将使用子进程隔离模式以降低 OOM 风险",
@@ -177,7 +179,7 @@ class AsrPipeline:
         self._report(status_cb, "说话人分离")
         try:
             self._load_diar()
-            diar = self.diar.run(audio, num_speakers=num_speakers)
+            diar = self.diar.run(audio, num_speakers=num_speakers, vad_segments=vad_segs)
         except Exception as e:
             log.error("[pipeline] 说话人分离失败: %s", e)
             move_to_error(path, reason=f"Diarization 失败: {e}")

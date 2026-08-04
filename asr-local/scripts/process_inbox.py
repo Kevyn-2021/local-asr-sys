@@ -174,10 +174,34 @@ def _cleanup_empty_dirs():
             pass
 
 
+def _move_failed_group(src: Path, reason: str = "") -> None:
+    """处理失败后，将主文件（若仍在收件箱）与同 stem 兄弟文件一并移入 error/ 目录。
+    v2.36：主文件可能已被 pipeline 内部 move_to_error 移走（已写日志），
+    此处仅处理仍留在收件箱的主文件与兄弟文件——否则失败后兄弟文件会被
+    下次扫描当作最优格式处理，违背 FR-001-MULTI"只处理最优格式"原则。"""
+    from src.archive import move_to_error
+    # 主文件：pipeline 未移动时才处理（已移动则其 .error.txt 已由 pipeline 写入）
+    if src.exists():
+        move_to_error(src, reason)
+    # 兄弟文件：一并移入 error/（不重复写 .error.txt 日志）
+    for f in sorted(src.parent.rglob("*")):
+        if not f.is_file() or f == src:
+            continue
+        if f.stem != src.stem or f.suffix.lower() == src.suffix.lower():
+            continue
+        if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        try:
+            move_to_error(f)
+            log.info("   失败组兄弟文件 %s 已移入 error/", f.name)
+        except Exception as e:
+            log.warning("   兄弟文件 %s 移入 error/ 失败: %s", f.name, e)
+
+
 def _archive_old_errors() -> int:
-    """每次处理前，将 error/ 目录中的旧 .error.txt 移入 archived/ 子文件夹。
+    """每次处理前，将 error/ 目录中的旧错误文件（.error.txt 日志 + 失败音频）移入 archived/ 子文件夹。
     这样 error/ 根目录只保留当前批次的错误，方便用户一眼看到最新问题。
-    v2.17：归档时在文件名中附加原文件的创建时间戳，避免重名冲突（复用 src.archive.archive_error_files）。
+    v2.17：归档时在文件名中附加原文件的创建时间戳，避免重名冲突；v2.36 起归档含失败音频（复用 src.archive.archive_error_files）。
     返回归档的文件数。"""
     from src.archive import archive_error_files
     count = archive_error_files()
@@ -297,9 +321,12 @@ def main():
                 else:
                     fail += 1
                     log.warning("⚠️  [%d/%d] 未处理 %s: %s", i, len(files), rel, result.error_msg)
+                    # 失败文件（主文件 + 兄弟文件）统一移入 error/，收件箱只保留待处理文件
+                    _move_failed_group(p, result.error_msg or "")
             except Exception as e:
                 fail += 1
                 log.exception("处理 %s 失败: %s", rel, e)
+                _move_failed_group(p, f"处理异常: {e}")
 
             # 注意：无论是否最后文件，状态都保持 "processing"，
             # 由循环外的 _status(state="idle") 统一切换到空闲，避免锁文件尚存时 WebUI 读到混乱状态

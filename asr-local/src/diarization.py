@@ -14,17 +14,34 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 import torch
 from pyannote.audio import Pipeline
 
 from config.settings import DIARIZATION_CONFIG, MODELS_DIR
-from src.utils.audio_utils import AudioLoad
+from src.utils.audio_utils import AudioLoad, build_speech_concatenation, load_audio
 
 log = logging.getLogger("asr-diarization")
+
+
+def _write_temp_wav(audio: AudioLoad) -> Path:
+    """把内存中的（拼接）音频写为临时 wav 文件，供子进程隔离模式按路径重新加载。"""
+    fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="asr_concat_")
+    os.close(fd)
+    try:
+        sf.write(tmp, audio.waveform.squeeze(0).numpy(), audio.sample_rate)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
+    return Path(tmp)
 
 
 def _load_pipeline(hf_token: str):
@@ -110,26 +127,58 @@ class Diarizer:
         # 所有时间戳必须"秒, 相对音频起点"，统一口径
         self.cfg = DIARIZATION_CONFIG
 
-    def run(self, audio: AudioLoad, *, num_speakers: int | None = None) -> list[DiarizationSegment]:
+    def run(self, audio: AudioLoad, *, num_speakers: int | None = None,
+            vad_segments=None) -> list[DiarizationSegment]:
         """运行说话人分离（子进程隔离模式）。
         当音频时长 >= 10 分钟时，自动切换到子进程模式以隔离 OOM 风险；
         短音频仍在主进程内直接运行以降低开销。
         v2.17：不设置自动超时——自动化超时要么误杀正常处理、要么干等，
         改为子进程无限等待 + 崩溃检测（OOM/段错误仍能感知），
-        真·挂死由外部监控（每 10 分钟状态检查）发现后人工介入。"""
+        真·挂死由外部监控（每 10 分钟状态检查）发现后人工介入。
+        v2.31：vad_segments 非空且 use_vad_concat 开启时，先按 VAD 语音段拼接
+        （切除静音，缩短 segmentation 滑窗输入），分离后再把时间戳映射回原始时间轴，
+        对调用方完全无感。"""
         if num_speakers is None:
             num_speakers = self.cfg.get("num_speakers")
 
-        audio_duration = audio.duration_s
+        # v2.31 VAD 静音切除加速
+        map_back = None
+        work_audio = audio
+        if vad_segments and self.cfg.get("use_vad_concat", True):
+            work_audio, map_back = build_speech_concatenation(audio, vad_segments)
+            if work_audio is not audio:
+                log.info("[diarization] VAD 拼接加速：%.1f 分钟 -> %.1f 分钟（切除静音）",
+                         audio.duration_s / 60, work_audio.duration_s / 60)
 
-        # 短音频（< 10 分钟）：主进程直接运行，性能更好
-        if audio_duration < 600:
-            return self._run_in_process(audio, num_speakers)
+        audio_duration = work_audio.duration_s
 
-        # 长音频（>= 10 分钟）：子进程隔离，防 OOM 拖垮主进程
-        log.info("[diarization] 音频时长 %.1f 分钟，使用子进程隔离模式（无超时）",
-                 audio_duration / 60)
-        return self._run_in_subprocess(audio, num_speakers)
+        tmp_wav: Path | None = None
+        try:
+            # 短音频（< 10 分钟）：主进程直接运行，性能更好
+            if audio_duration < 600:
+                segments = self._run_in_process(work_audio, num_speakers)
+            else:
+                # 长音频（>= 10 分钟）：子进程隔离，防 OOM 拖垮主进程
+                if work_audio is not audio:
+                    # 拼接音频在内存中，无对应文件：写临时 wav 供子进程重新加载
+                    tmp_wav = _write_temp_wav(work_audio)
+                    work_audio.original_path = tmp_wav
+                log.info("[diarization] 音频时长 %.1f 分钟，使用子进程隔离模式（无超时）",
+                         audio_duration / 60)
+                segments = self._run_in_subprocess(work_audio, num_speakers)
+
+            # 时间戳映射回原始时间轴
+            if map_back is not None and work_audio is not audio:
+                for seg in segments:
+                    seg.start_offset_s = map_back(seg.start_offset_s)
+                    seg.end_offset_s = map_back(seg.end_offset_s)
+            return segments
+        finally:
+            if tmp_wav is not None:
+                try:
+                    tmp_wav.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def _run_in_process(self, audio: AudioLoad, num_speakers: int | None) -> list[DiarizationSegment]:
         """主进程内直接运行（短音频）"""

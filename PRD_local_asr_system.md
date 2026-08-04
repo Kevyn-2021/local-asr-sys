@@ -1,7 +1,7 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v3.7  
-**日期**: 2026-08-03  
+**版本**: v2.36  
+**日期**: 2026-08-04  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
 
@@ -42,7 +42,7 @@
 
 ### 2.2 技术选型
 
-选用 Silero VAD + PyAnnote Diarization + 声纹向量匹配（Speaker Embedding）+ Qwen3-ASR-0.6B 自建流水线，**重点保障时间戳精度**。全部模型本地运行，数据不出设备。选型理由与工程实现细节见 [TDD §2](./TDD_local_asr_system.md#2-模型选型与部署)。
+选用 Silero VAD + PyAnnote Diarization + 声纹向量匹配（Speaker Embedding）+ Qwen3-ASR-1.7B 自建流水线，**重点保障时间戳精度**。全部模型本地运行，数据不出设备。选型理由与工程实现细节见 [TDD §2](./TDD_local_asr_system.md#2-模型选型与部署)。
 
 ---
 
@@ -109,7 +109,7 @@
   1. 扫描收件箱时，按 stem 分组收集所有同 stem 不同后缀的音频文件
   2. 每组按格式优先级选最优格式进行流水线处理，非最优格式不处理
   3. 处理成功后，将其他同名兄弟文件直接从收件箱删除，只保留被处理的格式
-  4. 处理失败时，兄弟文件保持不动（主文件保留在收件箱，兄弟文件同样保留，待问题修复后可重新处理；仅在 `error/` 目录下生成 `.error.txt` 日志文件说明失败原因）
+  4. 处理失败时，主文件与兄弟文件**一并移入 `error/` 目录**，并生成带时间戳的 `.error.txt` 日志说明失败原因（`error/` 文件名含产生错误的时间戳 `YYYYMMDD_HHMMSS`，防止新旧批次/同名文件重名冲突）；用户排查修复后可手动将文件移回收件箱重新处理（v2.36：失败文件不再留在收件箱，避免下次扫描把次优格式兄弟文件当主格式处理）
 - **示例**:
   ```
   收件箱/2026-08-01/ 下有:
@@ -125,10 +125,10 @@
   收件箱/2026-08-01/ 清空 ✅
 
   处理 meeting.wav 失败后:
-    error/2026-08-01_21_55_02_20260801_215502.error.txt  ← 仅记录失败原因（文件名含产生错误的时间戳 YYYYMMDD_HHMMSS，v2.17）
-    meeting.wav ✓ 保留在收件箱（可重试）
-    meeting.mp3 ✓ 保留在收件箱（兄弟文件不动）
-    meeting.opus ✓ 保留在收件箱（兄弟文件不动）
+    error/meeting.wav                              ← 原始文件移入 error/（重名时附加时间戳）
+    error/meeting.mp3                              ← 兄弟文件一并移入（避免下次当主格式处理）
+    error/meeting.opus                             ← 兄弟文件一并移入
+    error/meeting_20260801_215502.error.txt        ← 失败原因（文件名含产生错误的时间戳 YYYYMMDD_HHMMSS，v2.17）
   ```
 - **错误文件名规则 (v2.17)**: 每次产生的错误文件命名格式为 `{源文件名}_{产生错误时间YYYYMMDD_HHMMSS}.error.txt`，避免不同批次的错误因同名而混淆；用户查看 `error/` 根目录即可一眼区分新旧错误
 
@@ -159,7 +159,7 @@
   - 一律使用北京时间，纯数字无冒号（Windows/macOS/Linux 文件名均合法）
   - 示例: `2026-07-31-143052-153052.wav`
 - **冲突处理**: 同名文件追加 `_2`, `_3` 后缀
-- **失败归档**: 处理失败时，音频文件保留在收件箱原位置不动，仅在 `/home/kevin/asr_sys_local/audio_inbox/error/` 目录下生成 `.error.txt` 日志文件（以源文件名为基准名，不含扩展名），记录失败原因。原始文件保留在收件箱中，待问题修复后可重新处理，避免因文件被移走而转而处理次优格式的同名兄弟文件。每次新一轮处理启动前，旧错误文件自动移入 `error/archived/` 子文件夹，`error/` 根目录只保留当前批次错误
+- **失败归档**: 处理失败时，原始音频文件**移入 `/home/kevin/asr_sys_local/audio_inbox/error/` 目录**（重名时附加产生错误的时间戳 `YYYYMMDD_HHMMSS`），同 stem 兄弟文件一并移入（避免下次扫描把次优格式当主格式处理）；同时在 `error/` 下生成带时间戳的 `.error.txt` 日志（`{源文件名}_{YYYYMMDD_HHMMSS}.error.txt`）记录失败原因。用户排查修复后可手动将文件移回收件箱重新处理。每次新一轮处理启动前（「准备处理收件箱」按钮或自动），旧错误文件（日志 + 音频）自动移入 `error/archived/` 子文件夹，`error/` 根目录只保留当前批次错误
 - **空文件夹清理**: 处理完成后，自动删除收件箱下已清空的子文件夹（排除 `error/` 目录），保持收件箱整洁
 
 #### FR-002: 语音活动检测 (VAD)
@@ -185,26 +185,25 @@
 - **模型**: PyAnnote Speaker Diarization 3.1 模型（~11MB），运行于 PyAnnote 4.x 库
 - **参数配置**: 见 [TDD §3.2](./TDD_local_asr_system.md#32-diarization--pyannote-speaker-diarization-31)
 - **时间戳要求**: 所有时间戳必须是**相对于原始音频起点的偏移量**（秒），不可使用 VAD 后片段的相对时间
+- **性能优化 (v2.31)**: 先按 Silero VAD 语音段**拼接切除静音**再分离（缩短 segmentation 滑窗输入，加速与静音占比成正比），分离结果时间戳**自动映射回原始时间轴**，对下游（声纹/ASR/入库）完全无感；`use_vad_concat` 开关可在连续访谈等几乎无静音场景关闭（见 [TDD §3.2](./TDD_local_asr_system.md#32-diarization--pyannote-speaker-diarization-31)）
 - **精度目标**: DER (Diarization Error Rate) < 8%
 - **优化**: 已知说话人数时 DER 目标 < 5%
 
 #### FR-003-VID: 声纹库与说话人识别 (Speaker Identification)
 - **优先级**: P0
 - **描述**: 在 Diarization 分出"几个匿名说话人"之后，通过声纹向量匹配识别出"具体是谁"
-- **声纹库**:
-  - 每个注册人存一条声纹向量 (embedding)，**1 号必须是用户本人**，其余按注册顺序编号（老婆、女儿等）
-  - 存储于 SQLite `voiceprints` 表（见 7.1），向量以 BLOB 存储
-- **录入流程 (Enrollment)**:
-  - CLI/Web UI 提供"声纹录入"入口，提示录入规范：
-    - 环境安静、单人、距麦克风约 30cm
-    - 时长 **1~3 分钟**：先朗读系统指定的固定段落（约 30 秒，保证声学特征稳定），再自由说话 1~2 分钟（覆盖真实语调变化）
-    - 支持直接录音或导入已有音频文件（系统统一转 16kHz 单声道）
-  - 录入后提取声纹向量入库，并回放/试听确认质量
-  - **定位说明**：自 v2.3 起主流程为「标注学习」（FR-003-CLUSTER，处理音频即自动抓声纹、Web 标注姓名，无需专门录入）；本录入流程保留为**可选补充**手段（`enroll_voiceprint.py` 已降级为非主流程），用于需要高质量固定段落样本的场景
-- **匹配机制**:
-  - 对每个 Diarization 输出的说话人，聚合其全部片段提取声纹向量
-  - 与声纹库逐一计算**余弦相似度**，匹配阈值见 [TDD §3.3](./TDD_local_asr_system.md#33-声纹识别--pyannote-embedding)
-  - 未识别时进入声纹簇流程（见 FR-003-CLUSTER）
+- **声纹库** (`voiceprints` 表，见 7.1)：
+  - 每条记录一个人：`person_id` 自增编号、`person_name` 姓名、`embedding` 声纹向量（BLOB 存储）、`is_owner` 是否用户本人、`sample_audio_path` 录入样本路径
+  - **本人标记 `is_owner` 且仅允许一条**（CLI 校验：已存在本人则拒绝），不做"1 号必须为本人"的编号强约束
+- **录入流程 (CLI `enroll_voiceprint.py`，可选补充)**:
+  - **定位说明**：自 v2.3 起主流程为「标注学习」（FR-003-CLUSTER——处理音频即自动抓声纹、Web 标注姓名，无需专门录入）；CLI 录入保留为**可选补充**手段，用于需要高质量固定段落样本的场景
+  - 两种方式：① 导入已有音频文件（路径参数）；② `--record-seconds` 麦克风录音（sounddevice，16kHz 单声道）
+  - 规范提示：环境安静、单人、距麦克风约 30cm；时长下限校验 `VOICEPRINT_CONFIG.enroll_min_duration_s`（过短仅警告不阻断）
+  - 录入后提取声纹向量入库（`--is-owner` 标记本人）
+- **匹配机制**（`voiceprint.py`）:
+  - 对每个 Diarization 输出的匿名说话人，聚合其全部片段提取声纹向量（`aggregate_speaker_embedding`）
+  - 与**命名声纹库**和**已标注声纹簇**逐级计算**余弦相似度**（三级匹配逻辑见 [FR-003-CLUSTER](#fr-003-cluster-声纹簇持久化与标注学习)，阈值见 [TDD §3.3](./TDD_local_asr_system.md#33-声纹识别--pyannote-embedding)）
+  - 三级都不中 → pipeline 新建全局编号声纹簇 `unknown_XXXX`（见 FR-003-CLUSTER）
 - **模型**: PyAnnote Embedding（~98MB），复用 Diarization 生态
 - **输出**: 每个片段的最终说话人标签（注册人姓名 / `unknown_XXXX` 编号）+ 匹配得分
 
@@ -233,12 +232,12 @@
 #### FR-004: 语音识别 (ASR)
 - **优先级**: P0
 - **描述**: 将语音转录为文字
-- **模型**: Qwen3-ASR-0.6B (唯一 ASR 模型；1.7B 因内存与速度不适合本机，不采用；因使用场景无急用需求，不设备用快速模型)
+- **模型**: Qwen3-ASR-1.7B（v2.31 升级：0.6B 中文准确率已够用但长句/中英混合/带口音场景仍有明显差距；v2.32 定稿为显式 **FP32** 加载——CPU oneDNN 优化，实测 1.11× 实时、峰值内存 11.8GB；不设备用快速模型）
 - **语言**: 中文为主，支持 30 种语言与 22 种中文方言自动识别
 - **精度目标**: 中文 WER < 6%
 - **推理后端**: Transformers (本地离线, FP32)；不依赖 GPU/vLLM
 - **输出**: 文字 + 置信度
-- **注意**: 模型加载与推理的工程实现细节见 [TDD §3.4](./TDD_local_asr_system.md#34-asr--qwen3-asr-06b)
+- **注意**: 模型加载与推理的工程实现细节见 [TDD §3.4](./TDD_local_asr_system.md#34-asr--qwen3-asr-17b)
 
 #### FR-005: 时间戳计算与存储 (核心功能)
 - **优先级**: P0
@@ -292,7 +291,7 @@
 #### FR-007: 时间戳输出格式 (Organic 格式)
 - **优先级**: P0
 - **描述**: 文本备份必须包含多层时间戳信息
-- **ASR 文本清洗**: 去除 Qwen3-ASR 输出的特殊 token（如 `<|system|>`、`<|user|>`、`<|assistant|>` 等），保留纯文字内容。清洗逻辑见 [TDD §3.4](./TDD_local_asr_system.md#34-asr--qwen3-asr-06b)
+- **ASR 文本清洗**: 去除 Qwen3-ASR 输出的特殊 token（如 `<|system|>`、`<|user|>`、`<|assistant|>` 等），保留纯文字内容。清洗逻辑见 [TDD §3.4](./TDD_local_asr_system.md#34-asr--qwen3-asr-17b)
 - **Organic 格式规范**:
   ```
   # 转录记录
@@ -351,13 +350,13 @@
   - 「🧹 准备处理收件箱」按钮（左侧）+「▶ 开始处理收件箱」主按钮（右侧），并排展示（v2.17）
 - **准备处理收件箱 (v2.17)**:
   - 点击后执行两个动作，为新一轮处理做好准备：
-    1. **归档旧错误**：将 `error/` 根目录下的 `.error.txt` 全部移入 `error/archived/`（文件名附加原文件创建时间戳，避免重名），使根目录只保留新一轮处理产生的错误，新旧不混淆
+    1. **归档旧错误**：将 `error/` 根目录下的错误文件（`.error.txt` 日志 + 失败音频）全部移入 `error/archived/`（文件名附加原文件创建时间戳，避免重名），使根目录只保留新一轮处理产生的错误，新旧不混淆
     2. **解锁**：若存在残留锁文件（上次异常退出遗留的陈旧锁）则删除，确保新一轮处理能正常获取锁；正在处理中（新鲜锁）时保留锁并提示
   - 逻辑顺序：先「准备处理收件箱」，再「开始处理收件箱」，动作更顺
 - **处理执行**:
   - 逐个处理所有待处理文件，非交互模式（时间冲突自动接受系统建议）
   - 锁文件防止重复触发（6 小时陈旧自动失效），状态实时写入 `status.json` 供看板同步
-  - 处理完成后清理收件箱空文件夹；失败时仅生成 `.error.txt` 日志，不移动文件
+  - 处理完成后清理收件箱空文件夹；失败时主文件与兄弟文件移入 `error/` 目录，并生成 `.error.txt` 日志说明原因（见 FR-001-AR 失败归档）
 - **状态上报**: 详见 [TDD §1.3](./TDD_local_asr_system.md#13-状态机)
 - **按钮禁用条件**: 锁文件存在、状态为处理中/处理失败、或收件箱无待处理文件时禁用
 - **进度反馈**: 处理中概览页每 15 秒自动刷新，状态带、6 阶段进度条（已完成/进行中/未处理三态显示）、待处理数实时更新
@@ -376,7 +375,7 @@
 #### FR-008-S: 转录全文搜索（含中文分词修复）
 - **优先级**: P0
 - **描述**: 搜索·文件页提供关键词全文检索，可叠加说话人、时间范围筛选（界面见 §8.2 页 4）
-- **中文分词修复**: 原 `transcripts_fts` 使用 FTS5 unicode61 分词器不识别中文词，改用 `transcripts_fts2` + jieba 分词方案。详见 [TDD §3.4](./TDD_local_asr_system.md#34-asr--qwen3-asr-06b)
+- **中文分词修复**: 原 `transcripts_fts` 使用 FTS5 unicode61 分词器不识别中文词，改用 `transcripts_fts2` + jieba 分词方案（查询方式见 §8.1.4 关键词全文检索）
 
 ### 4.2 扩展功能 (v2.0)
 
@@ -423,11 +422,11 @@
 | 指标 | 目标 | 说明 |
 |------|------|------|
 | VAD 处理速度 | > 100× 实时 | 1 小时音频 < 36 秒 |
-| Diarization 速度 | > 2× 实时 (CPU) | 1 小时音频约 20~30 分钟；指定说话人数可更快 |
+| Diarization 速度 | > 2× 实时 (CPU) | 1 小时音频约 20~30 分钟；指定说话人数可更快；v2.31 起按 VAD 段拼接切除静音，实际耗时随语音占比进一步缩短 |
 | 声纹匹配 | < 10 秒/说话人 | 向量提取 + 余弦比对，开销极小 |
-| ASR 速度 (Qwen3-0.6B, CPU) | > 0.5× 实时 | 1 小时音频约 1~2 小时 (纯 CPU 物理上限) |
+| ASR 速度 (Qwen3-1.7B, CPU, FP32) | 约 1.11× 实时（v2.32 实测） | 17 分钟录音实测：93s 语音转录 103s；按语音段转录，实际取决于语音总量 |
 | 整体流水线 | < 2.5 小时/小时音频 | 分离+识别+转录串行，可后台/夜间批处理 |
-| 内存峰值 | < 6GB | 分阶段加载，确保 16GB 系统不 OOM |
+| 内存峰值 | < 12GB | 1.7B FP32 实测 11.8GB；16GB 系统留 ~4GB 余量（v2.32 放宽，原 6GB） |
 | 数据库查询 | < 100ms | 10 万条记录内 |
 | 时间戳计算 | < 1ms/条 | 纯数学运算，无 I/O |
 
@@ -435,7 +434,7 @@
 
 ### 5.1.1 内存编排要求 (P0)
 - 流水线**按阶段串行加载、用完即卸**：Diarization 完成后释放其内存，再加载 ASR 模型
-- 目标: 任意时刻内存峰值 < 6GB，为系统与其他应用留足余量，并避免 15W 低压 CPU 过热降频
+- 目标: 任意时刻内存峰值 < 12GB（v2.32 放宽，原 6GB；1.7B FP32 实测 11.8GB），为系统与其他应用留 ~4GB 余量
 - 模型加载超时、超时处理等工程实现细节见 [TDD §2.3-2.4](./TDD_local_asr_system.md#23-模型加载超时机制)
 
 ### 5.2 可靠性需求
@@ -444,7 +443,7 @@
 |------|------|
 | 断点续传 | 处理中断后可从断点恢复 |
 | 错误隔离 | 单文件处理失败不影响其他文件 |
-| 失败归档 | 处理失败时，音频文件保留在收件箱原位置，仅在 `error/` 目录生成 `.error.txt` 日志文件；兄弟文件不动，待问题修复后可重新处理 |
+| 失败归档 | 处理失败时，原始音频文件与同 stem 兄弟文件**移入 `error/` 目录**，并在 `error/` 下生成带时间戳的 `.error.txt` 日志文件说明原因；文件保留供排查，用户可手动移回收件箱重新处理 |
 | 日志记录 | 完整日志保存到 `/home/kevin/asr_sys_local/audio_archive/pipeline.log` |
 | **时间戳一致性** | 即使处理中断重试，同一音频的时间戳结果必须一致 |
 
@@ -452,7 +451,7 @@
 
 | 需求 | 说明 |
 |------|------|
-| 完全离线 | **v2.18 修正**：所有模型（Silero VAD / PyAnnote Diarization / 声纹 / Qwen3-ASR）首次下载至本地后，运行时**完全离线**，不与 GitHub/HuggingFace 交互：Silero VAD 用 `source='local'` 加载本地缓存，PyAnnote 用 `HF_HUB_OFFLINE=1`，Qwen3-ASR 直接加载本地自定义解压目录 `models/Qwen3-ASR-0.6B-hf/`（v2.18 修复：`local_files_only=True` 只认 hub 缓存格式，匹配不到自定义目录会误判"本地缺失"而回退联网失败）；仅当本地模型缺失时才联网下载一次（依赖 `HF_TOKEN`） |
+| 完全离线 | **v2.18 修正**：所有模型（Silero VAD / PyAnnote Diarization / 声纹 / Qwen3-ASR）首次下载至本地后，运行时**完全离线**，不与 GitHub/HuggingFace 交互：Silero VAD 用 `source='local'` 加载本地缓存，PyAnnote 用 `HF_HUB_OFFLINE=1`，Qwen3-ASR 直接加载本地自定义解压目录 `models/Qwen3-ASR-1.7B-hf/`（v2.18 修复：`local_files_only=True` 只认 hub 缓存格式，匹配不到自定义目录会误判"本地缺失"而回退联网失败）；仅当本地模型缺失时才联网下载一次（依赖 `HF_TOKEN`） |
 | 数据不出个人设备 | 音频、转录结果均只存于 ThinkPad；跨设备访问走 Tailscale 加密隧道，无云端副本 |
 | 模型权重本地化 | 所有模型权重存储在 `/home/kevin/asr_sys_local/asr-local/models/`（通过 `HF_HOME` 环境变量统一指向），避免写入 `~/.cache/huggingface/` |
 | 访问控制 | 数据库文件权限 600；Tailscale ACL 仅放行用户本人设备 |
@@ -479,13 +478,13 @@
 | VAD | Silero VAD (snakers4/silero-vad) | 模型轻量（~1MB），加载速度快、延迟低 |
 | Diarization | PyAnnote 4.x + speaker-diarization-3.1 模型 | 开源 SOTA，中文会议 DER ~12% |
 | 声纹向量 | PyAnnote Embedding | 与 Diarization 同生态，向量比对开销小 |
-| ASR | Qwen3-ASR-0.6B | 中文最强，纯 CPU ~0.5× 实时；唯一 ASR 模型 |
+| ASR | Qwen3-ASR-1.7B | 中文最强梯队，长句/中英混合/口音场景优于 0.6B；唯一 ASR 模型 |
 | 数据库 | SQLite | 零配置，足够单机使用 |
 | Web UI | Streamlit | 快速开发，Python 原生 |
 | 触发方式 | 手动触发（process_inbox.py） | Web 看板按钮触发，递归扫描收件箱含子文件夹 |
 | 跨设备访问 | Tailscale (WireGuard) | 端到端加密组网，无云端副本 |
 | 时间处理 | `python-dateutil` + `zoneinfo` | 时区、ISO 8601 解析 |
-| 模型下载 | HuggingFace Hub（国内镜像 hf-mirror.com） | 解决国内网络访问问题 |
+| 模型下载 | HuggingFace Hub（`step2_download_models.sh` 用 huggingface-cli 拉取）；直连卡死时经代理（open_proxy）或改用 ModelScope 兜底 | 解决国内网络访问问题 |
 
 
 
@@ -536,7 +535,7 @@ CREATE TABLE transcripts (
 CREATE TABLE voiceprints (
     person_id               INTEGER PRIMARY KEY AUTOINCREMENT,
     person_name             TEXT NOT NULL UNIQUE,    -- 姓名/称呼（如：我、老婆、女儿）
-    is_owner                INTEGER DEFAULT 0,       -- 1 = 用户本人（声纹库 1 号，仅一条）
+    is_owner                INTEGER DEFAULT 0,       -- 1 = 用户本人（仅一条，CLI 校验：已存在本人则拒绝）
     embedding               BLOB NOT NULL,           -- 声纹向量
     sample_audio_path       TEXT,                    -- 录入样本路径
     enrolled_at             TEXT NOT NULL,           -- 录入时间 (ISO 8601)
@@ -684,9 +683,9 @@ END;
 
 | 信息项 | SQL 查询 |
 |--------|---------|
-| 累计处理文件数 | `SELECT COUNT(DISTINCT source_file) FROM transcripts` |
-| 累计转录片段数 | `SELECT COUNT(*) FROM transcripts` |
-| 累计音频总时长 | `SELECT COALESCE(SUM(audio_duration),0) FROM transcripts` |
+| 音频数量（首页"处理成果"） | `SELECT COUNT(DISTINCT file_hash) FROM transcripts`（按去重音频文件数，与归档音频数一致） |
+| 累计转录片段数（处理记录页"共 N 条"） | `SELECT COUNT(*) FROM transcripts` |
+| 累计音频总时长（秒，首页换算小时显示） | `SELECT COALESCE(SUM(d),0) FROM (SELECT MAX(audio_duration) AS d FROM transcripts GROUP BY file_hash)`（audio_duration 存的是整文件时长且每个片段行重复，须按文件去重后再求和） |
 | 最近处理记录 | `SELECT ... ORDER BY processed_at DESC LIMIT 5` |
 
 #### 8.1.3 声纹库信息（来源：SQLite 数据库 `voiceprints` / `speaker_clusters` / `persons` 表）
@@ -790,7 +789,7 @@ END;
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │ 处理成果   全部历史累计                    ← 面板头部   │   │
 │  │ ─────────────────────────────────────────────        │   │
-│  │  2 处理文件  4 转录片段  1 标注声纹  1 录入人员  0.0 时长(h)│   │  ← 带边框面板
+│  │  2 音频数量  1 标注声纹  1 录入人员  0.0 时长(h)        │   │  ← 带边框面板
 │  │   （标注声纹=已标注的唯一姓名数——同一个人计 1 次，非按簇计数）  │   │
 │  └──────────────────────────────────────────────────────┘   │     纯文本大数字行（无色块）
 │                                                              │     大数字 2rem 为视觉锚点
@@ -817,7 +816,7 @@ END;
 │  │ ─────────────────────────────────────────────        │   │
 │  │ 01 VAD语音检测→02 说话人分离→03 声纹识别→04 ASR转文字  │   │  ← KVI 横向框图：
 │  │  Silero VAD  pyannote-3.1   pyannote   Qwen3-ASR    │   │     灰阶节点+暖赭编号
-│  │  snakers4/               embedding    -0.6B          │   │     +细箭头
+│  │  snakers4/               embedding    -1.7B          │   │     +细箭头
 │  │  silero-vad                                        │   │
 │  │ 输入：收件箱音频各格式                                 │   │
 │  │ 产出：带时间戳转录文字·归档音频·txt/json·SQLite    │   │
@@ -872,23 +871,22 @@ $ bash run.sh
 ║       🎙️  本地音频转录与声纹识别系统 — 主菜单          ║
 ║                                                          ║
 ║  🖥️   运行环境: ThinkPad Ubuntu 24.04 · i5-10210U       ║
-║  🧠 模型组合: Silero VAD + PyAnnote + Qwen3-ASR-0.6B    ║
-║  💾 数据位置: ~/audio_archive/  (SQLite + 文本备份)     ║
-║  📥 收件箱  : ~/audio_inbox/  (丢文件进这里自动处理)    ║
+║  🧠 模型组合: Silero VAD + PyAnnote + Qwen3-ASR-1.7B    ║
+║  💾 数据位置: ~/asr_sys_local/audio_archive/           ║
+║  📥 收件箱  : ~/asr_sys_local/audio_inbox/  (看板手动触发)║
 ╚══════════════════════════════════════════════════════════╝
 
 请选择运行模式:
-  1) 🚀 启动目录监控 (收件箱自动处理，不推荐，默认禁用)
-  2) 📝 单次处理音频文件
-  3) 🖥️   启动 Web 管理界面 (Streamlit)
-  4) 🎤 声纹库录入 (注册 '我' / 老婆 / 女儿)
-  5) 👥 查看声纹库
-  6) 📊 查看数据库统计
-  7) ⬇️  下载/验证模型权重
-  8) 🔑 设置/覆盖 HF Token
-  9) ❌ 退出
+  1) 📝 单次处理音频文件
+  2) 🖥️   启动 Web 管理界面 (Streamlit)
+  3) 🎤 声纹库录入 (注册 '我' / 老婆 / 女儿)
+  4) 👥 查看声纹库
+  5) 📊 查看数据库统计
+  6) ⬇️  下载/验证模型权重
+  7) 🔑 设置/覆盖 HF Token
+  8) ❌ 退出
 
-输入选项 [1-9]: 2
+输入选项 [1-8]: 1
 音频文件路径: 2026-08-02_19_30_25.wav
 已知说话人数 (回车=自动检测): 2
 
@@ -927,13 +925,13 @@ $ bash run.sh
 
 | 风险 | 概率 | 影响 | 缓解措施 |
 |------|------|------|---------|
-| 模型首次下载失败 | 中 | 高 | 使用国内镜像源（hf-mirror.com）+ 手动下载脚本 |
-| 内存不足 (OOM) | 中 | 高 | 默认 0.6B 模型，分阶段串行加载/卸载 |
+| 模型首次下载失败 | 中 | 高 | 手动下载脚本 `step2_download_models.sh`；HF 直连卡死时经代理（open_proxy）或改用 ModelScope 下载（v2.31 实测 hf-mirror 不可用） |
+| 内存不足 (OOM) | 中 | 高 | 1.7B FP32 峰值 11.8GB（< 12GB 红线），分阶段串行加载/卸载；内存紧张可回退 bf16（5.2GB/3.14× 实时，见 TDD §3.4） |
 | PyAnnote Token 过期 | 低 | 中 | 文档明确说明申请流程 |
 | 长音频处理超时 | 中 | 中 | 支持分段处理 + 断点续传 |
 | 声纹分离精度不足 | 中 | 中 | 支持手动指定说话人数优化 |
 | **声纹误匹配 (张冠李戴)** | 中 | 中 | 三档阈值 + "疑似待确认"队列 + 录入规范（1~3 分钟干净语音） |
-| 声纹库样本质量差 | 中 | 中 | 录入流程引导 + 试听确认 + 支持重新录入 |
+| 声纹库样本质量差 | 中 | 中 | 录入流程引导（时长校验 `enroll_min_duration_s`）+ 支持重新录入 |
 | CPU 过热/降频 | 低 | 低 | 处理间隔休眠，避免满负荷 |
 | **文件名格式不匹配** | 低 | 中 | 支持多种常见格式 + 正则自定义 + 回退到文件创建时间 |
 | **时间戳提取失败** | 中 | **高** | 提供多种提取策略 + 手动输入兜底 |
@@ -968,11 +966,11 @@ $ bash run.sh
 
 ### 11.3 参考资源
 
-- Qwen3-ASR: https://huggingface.co/Qwen/Qwen3-ASR-0.6B
+- Qwen3-ASR: https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf
 - PyAnnote Diarization: https://huggingface.co/pyannote/speaker-diarization-3.1
 - PyAnnote Segmentation: https://huggingface.co/pyannote/segmentation-3.0
 - PyAnnote Embedding: https://huggingface.co/pyannote/embedding
-- HuggingFace 国内镜像: https://hf-mirror.com
+- ModelScope（模型镜像下载，v2.31 实测可用）: https://modelscope.cn
 - Tailscale: https://tailscale.com
 - ISO 8601: https://en.wikipedia.org/wiki/ISO_8601
 - SQLite FTS5: https://www.sqlite.org/fts5.html
@@ -1025,6 +1023,12 @@ $ bash run.sh
 | v2.28 | 2026-08-03 | **README 英文化上提仓库根**：README 移至仓库根（`asr_sys_local/README.md`）并全文改写为英文，核心传达"本地运行、完全离线、数据不出本机"；仓库 Description（英文文案）需在 GitHub 网页 About 处手动设置（本机无 gh CLI/token）；需求功能无变化，工程细节见 [TDD v2.28](./TDD_local_asr_system.md#6-变更日志) |
 | v2.29 | 2026-08-03 | **git 仓库根外置（README 落仓库根）**：修正 v2.28 的 README 未显示问题——git 仓库根为 `ASR-Local-Thinkpad/`（README.md/.gitignore 在此，GitHub 首页渲染 README），工程总目录 `asr_sys_local/` 保持与运行节点一致；需求功能无变化，工程细节见 [TDD v2.29](./TDD_local_asr_system.md#6-变更日志) |
 | v2.30 | 2026-08-03 | **仓库扁平化（去除 asr_sys_local 包裹层）**：git 仓库根一级直接放置全部有效内容——代码目录 `asr-local/`、数据目录 `audio_archive/`/`audio_inbox/`（占位）、README.md、PRD/TDD、.gitignore，与运行节点 `/home/kevin/asr_sys_local/` 内容一一对应；ThinkPad 生产路径不变（`deploy_webui.sh` 两端逻辑零改动）；需求功能无变化，工程细节见 [TDD v2.30](./TDD_local_asr_system.md#6-变更日志) |
+| v2.31 | 2026-08-03 | **ASR 升级 1.7B + VAD 静音切除加速说话人分离**：① **ASR 模型 0.6B → 1.7B**（FR-004）——长句/中英混合/带口音场景准确率明显提升；权重按模型默认精度加载（半精度存储 ~3.4GB，移除原 FP32 强转），内存峰值仍 < 6GB；耗时为 0.6B 的约 3 倍，实测校准中；② **说话人分离按 VAD 段拼接切除静音**（FR-003）——PyAnnote segmentation 滑窗按"总时长"遍历、静音也在白白计算，先按 Silero VAD 语音段拼接成连续音频再分离（输入压缩为语音总时长，加速与静音占比成正比），分离结果时间戳自动映射回原始时间轴，对下游完全无感；`DIARIZATION_CONFIG.use_vad_concat` 开关可在几乎无静音场景关闭；工程细节见 [TDD v2.31](./TDD_local_asr_system.md#6-变更日志) |
+| v2.32 | 2026-08-03 | **ASR 加载精度定稿 FP32 + 内存红线放宽**：① **1.7B 改为显式 FP32 加载**（v2.31 默认精度实测为 bf16，CPU 无 AVX512-BF16 回退转换，3.14× 实时偏慢）——FP32 有 oneDNN 优化，实测 **1.11× 实时**（93s 语音转录 103s），转录质量不变（FR-004）；② **内存峰值红线 6GB → 12GB**（§5.1）：FP32 权重 ~6.8GB，实测峰值 **11.8GB**，16GB 系统留 ~4GB 余量；内存紧张可回退 bf16（5.2GB / 3.14× 实时，见 TDD §3.4）；③ 修复 bf16 默认精度下音频特征 float32 与权重类型不匹配问题（输入按模型 dtype 对齐，fp32 下不触发）；工程细节见 [TDD v2.32](./TDD_local_asr_system.md#6-变更日志) |
+| v2.33 | 2026-08-03 | **文档/界面与实际对齐清理**：① 清理 VAD 死配置 `max_speech_len_s`（代码从未使用）；② **FR-003-VID 按实际实现重写**——声纹库字段（`is_owner` 本人唯一、非"1 号必须本人"）、录入流程（CLI 导入/录音、无朗读固定段落与试听功能）、匹配机制（三级匹配指向 FR-003-CLUSTER）；③ WebUI「音频处理流程」面板模型名 0.6B→1.7B、02/03 步骤描述补充 VAD 拼接与声纹簇机制；④ §5.3 完全离线目录名 0.6B-hf→1.7B-hf、风险评估去除"试听确认"；⑤ 文档头部版本号与变更日志对齐（PRD v2.33 / TDD v2.33）；工程细节见 [TDD v2.33](./TDD_local_asr_system.md#6-变更日志) |
+| v2.34 | 2026-08-04 | **处理成果面板统计修正**：① 首页"转录片段"改为"音频数量"——数字按去重音频文件数（`COUNT(DISTINCT file_hash)`，与「搜索·文件」归档音频数一致）；② "累计时长(h)"数值修正——原 `SUM(audio_duration)` 将同一文件的整文件时长按片段数重复累加致虚高，改为按文件去重后求和再换算小时；③ 移除与"音频数量"重复的原"处理文件"格子；工程细节见 [TDD v2.34](./TDD_local_asr_system.md#6-变更日志) |
+| v2.35 | 2026-08-04 | **全文一致性 Review 清理**：① 修复失效链接——FR-007 的 TDD §3.4 锚点 0.6B→1.7B、FR-008-S 原指向错误章节的链接改为自引用 §8.1.4；② 模型下载表述与实际对齐（hf-mirror 实测不可用：§6.1 技术栈、§9 风险表、§11.3 参考资源改为 huggingface-cli + 代理/ModelScope 兜底）；③ §8.3 CLI 示例与实际 8 项菜单对齐（移除已取消的"启动目录监控"项、序号/文案与 run.sh 一致）；④ §7.1 voiceprints 表 is_owner 注释去掉旧"声纹库 1 号"概念（对齐 FR-003-VID）；工程细节见 [TDD v2.35](./TDD_local_asr_system.md#6-变更日志) |
+| v2.36 | 2026-08-04 | **失败文件处理回归"移入 error/"**：① FR-001-AR / FR-001-MULTI——处理失败时原始音频文件**移入 `error/` 目录**（重名时附加产生错误时间戳），同 stem 兄弟文件一并移入，`.error.txt` 日志带时间戳防重名（v2.9 曾改为"仅留日志不移文件"，本次按实际需求恢复移入，收件箱只保留待处理文件；用户排查后可手动移回重试）；② 旧错误归档（「准备处理收件箱」/自动）范围扩展为日志 + 失败音频一并归档到 `error/archived/`；③ §8.1.6 错误目录说明同步；工程细节见 [TDD v2.36](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 

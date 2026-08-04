@@ -36,9 +36,9 @@ cat <<'BANNER'
 ║       🎙️  本地音频转录与声纹识别系统 — 主菜单          ║
 ║                                                          ║
 ║  🖥️   运行环境: ThinkPad Ubuntu 24.04 · i5-10210U       ║
-║  🧠 模型组合: Silero VAD + PyAnnote + Qwen3-ASR-0.6B    ║
+║  🧠 模型组合: Silero VAD + PyAnnote + Qwen3-ASR-1.7B    ║
 ║  💾 数据位置: ~/asr_sys_local/audio_archive/           ║
-║  📥 收件箱  : ~/asr_sys_local/audio_inbox/  (选 1/2 处理)  ║
+║  📥 收件箱  : ~/asr_sys_local/audio_inbox/  (看板手动触发)║
 ╚══════════════════════════════════════════════════════════╝
 BANNER
 
@@ -87,7 +87,7 @@ while true; do
       if [ -z "${HF_TOKEN:-}" ]; then echo "缺少 HF_TOKEN"; continue; fi
       read -rp "注册人称呼 (例: 我/老婆/女儿): " name
       [ -z "$name" ] && continue
-      read -rp "是用户本人吗？(声纹库 1 号仅一条) [y/N]: " own
+      read -rp "是用户本人吗？(is_owner 标记，仅一条) [y/N]: " own
       read -rp "音频文件路径 (留空=用麦克风录 $((90)) 秒): " audio
       args=(--name "$name")
       [ "${own,,}" = "y" ] && args+=(--is-owner)
@@ -102,7 +102,7 @@ while true; do
 import sys; sys.path.insert(0, "$PROJ_ROOT")
 from src.db import connect
 with connect() as c:
-  r = c.execute("SELECT COUNT(*) segs, COUNT(DISTINCT source_file) files, COUNT(DISTINCT speaker) spks, COALESCE(SUM(audio_duration),0)/3600.0 hrs FROM transcripts").fetchone()
+  r = c.execute("SELECT COUNT(*) segs, COUNT(DISTINCT file_hash) files, COUNT(DISTINCT speaker) spks, COALESCE((SELECT SUM(d) FROM (SELECT MAX(audio_duration) AS d FROM transcripts GROUP BY file_hash)),0)/3600.0 hrs FROM transcripts").fetchone()
   print(f"  总片段  : {r['segs']}")
   print(f"  文件数  : {r['files']}")
   print(f"  说话人  : {r['spks']}")

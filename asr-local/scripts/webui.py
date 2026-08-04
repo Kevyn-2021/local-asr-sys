@@ -53,7 +53,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-03-12:58:13"
+UI_VERSION = "2026-08-04-23:23:23"
 
 st.set_page_config(page_title="ASR 本地转录系统", page_icon="🎙️", layout="wide")
 
@@ -553,8 +553,11 @@ def get_disk_info() -> tuple[float, float, float]:
 def get_stats() -> dict:
     with connect() as conn:
         row = dict(conn.execute(
-            "SELECT COUNT(*) AS segments, COUNT(DISTINCT source_file) AS files, "
-            "COALESCE(SUM(audio_duration), 0) AS total_seconds FROM transcripts"
+            # 音频数量 = 去重文件数（与归档音频数一致）；总时长按文件去重后求和
+            # （audio_duration 存的是整文件时长，逐片段 SUM 会重复累加同一文件）
+            "SELECT COUNT(DISTINCT file_hash) AS files, "
+            "COALESCE((SELECT SUM(d) FROM (SELECT MAX(audio_duration) AS d "
+            "FROM transcripts GROUP BY file_hash)), 0) AS total_seconds FROM transcripts"
         ).fetchone())
         # 标注声纹：已标注姓名的声纹簇数（按唯一姓名去重）
         row["labeled"] = conn.execute(
@@ -971,9 +974,9 @@ def render_pipeline_diagram() -> str:
     """KVI 风格横向流程图：4 个模型的分工与产出（灰阶节点 + 暖赭编号）"""
     stages = [
         ("01", "VAD 语音检测", "Silero VAD", "找出音频里哪些片段有人在说话，过滤静音与噪声。"),
-        ("02", "说话人分离", "pyannote diarization-3.1", "把语音按“谁在说”切成若干段，每段标记一个匿名说话人。"),
-        ("03", "声纹识别", "pyannote embedding", "给每个说话人提取声纹向量，与声纹库比对，认出是哪位已录入的人，认不出记为 unknown。"),
-        ("04", "ASR 语音转文字", "Qwen3-ASR-0.6B", "把每一小段语音转成文字，得到带绝对时间戳的转录片段。"),
+        ("02", "说话人分离", "pyannote diarization-3.1", "先按 VAD 语音段拼接（切除静音加速），再把语音按“谁在说”切成若干段，每段标记一个匿名说话人。"),
+        ("03", "声纹识别", "pyannote embedding", "给每个说话人提取声纹向量，与声纹库/已标注声纹簇比对认出是谁；认不出则新建 unknown 编号待标注。"),
+        ("04", "ASR 语音转文字", "Qwen3-ASR-1.7B", "把每一小段语音转成文字，得到带绝对时间戳的转录片段。"),
     ]
     nodes = []
     for i, (num, name, model, desc) in enumerate(stages):
@@ -1179,8 +1182,7 @@ if page == "概览 · 状态":
         stats = get_stats()
         st.markdown(
             f"<div class='stat-grid'>"
-            f"<div class='stat-cell'><span class='stat-num'>{stats['files']}</span><span class='stat-lbl'>处理文件</span></div>"
-            f"<div class='stat-cell'><span class='stat-num'>{stats['segments']}</span><span class='stat-lbl'>转录片段</span></div>"
+            f"<div class='stat-cell'><span class='stat-num'>{stats['files']}</span><span class='stat-lbl'>音频数量</span></div>"
             f"<div class='stat-cell'><span class='stat-num'>{stats['labeled']}</span><span class='stat-lbl'>标注声纹</span></div>"
             f"<div class='stat-cell'><span class='stat-num'>{stats['persons']}</span><span class='stat-lbl'>录入人员</span></div>"
             f"<div class='stat-cell'><span class='stat-num'>{stats['hours']}</span><span class='stat-lbl'>累计时长 (h)</span></div>"

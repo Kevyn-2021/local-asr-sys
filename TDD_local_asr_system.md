@@ -1,7 +1,7 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v1.7  
-**日期**: 2026-08-03  
+**版本**: v2.36  
+**日期**: 2026-08-04  
 **状态**: 持续更新
 
 > **===== 文档分工说明（请先阅读）=====**
@@ -199,9 +199,9 @@ def apply_cluster_label(cluster_id, target):
 | Silero VAD (snakers4/silero-vad) | ~1MB | ~200MB | GitHub | >100× 实时 |
 | PyAnnote Diarization 3.1 (PyAnnote 4.x 库) | ~11MB | ~1-2GB | HuggingFace | ~2-3× 实时 |
 | PyAnnote Embedding (声纹) | ~98MB | ~200MB | HuggingFace | 秒级 |
-| Qwen3-ASR-0.6B | ~1.5GB | ~3GB | HuggingFace / ModelScope | ~0.5× 实时 |
+| Qwen3-ASR-1.7B | ~6.8GB (FP32) | ~12GB | HuggingFace / ModelScope | 约 1.11× 实时（v2.32 实测） |
 
-> 不采用 Qwen3-ASR-1.7B：~6GB 内存 + 速度减半，超出本机 (16GB/无独显) 性价比。
+> **v2.32 精度口径（实测）**：1.7B 显式 **FP32** 加载（`torch_dtype=torch.float32`）。v2.31 曾试默认精度（实测为 **bfloat16**，CPU 无 AVX512-BF16 指令回退转换计算），速度 3.14× 实时、内存 5.2GB；FP32 有 oneDNN 优化，速度 **1.11× 实时**（93s 语音转录 103s）、峰值内存 **11.8GB**（16GB 系统留 ~4GB 余量）。内存红线已放宽至 **<12GB**（原 6GB）。若内存紧张可回退 bf16（移除 asr.py 的 torch_dtype 参数即可）。
 
 ### 2.2 模型存储路径
 
@@ -217,7 +217,7 @@ def apply_cluster_label(cluster_id, target):
 
 ### 2.4 内存编排
 
-流水线按阶段串行加载、用完即卸，峰值内存控制在 <6GB：
+流水线按阶段串行加载、用完即卸，峰值内存控制在 <12GB（v2.32 放宽：1.7B FP32 实测 11.8GB，16GB 系统留 ~4GB 余量；原 <6GB）：
 
 - 完成 Diarization 后卸载其模型，再加载 ASR 模型
 - 每个音频处理结束后强制 GC（`gc.collect()`）
@@ -326,6 +326,18 @@ end_s = seg["end"] / sr
 i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟。
 > 实测修正（v2.16）：长音频（>= 10 分钟）在子进程隔离模式下实际接近 **1 倍实时**（15.3 分钟音频耗时 > 15 分钟），短音频在主进程内约 2~3 倍实时。
 
+#### VAD 静音切除加速（v2.31）
+PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步长遍历全音频，与**总时长**成正比，静音也在白白计算）、**speaker embedding**（对语音段提向量，pipeline 内部 VAD head 本就跳过静音）、**clustering**（量小）。因此切静音收益集中在 segmentation 阶段，收益上限 = 静音占比 × segmentation 耗时占比。
+
+实现（对调用方完全无感）：
+1. pipeline 将 Silero VAD 语音段传入 `Diarizer.run(audio, vad_segments=...)`
+2. `src/utils/audio_utils.py::build_speech_concatenation()` 按 VAD 段拼接：先合并重叠/紧邻段（Silero 输出含 `speech_pad_ms` 边界，gap < 0.1s 视为同一次说话），再逐段拼接，段内保留原始波形
+3. Diarization 跑在拼接音频上，输出段时间戳经映射表**线性映射回原始时间轴**（`map_back`：拼接轴时间 → 原轴偏移）
+4. 子进程隔离模式（≥10 分钟）：拼接音频无对应文件，先写临时 wav（`_write_temp_wav`）供子进程按路径加载，完成后清理
+5. 开关 `DIARIZATION_CONFIG["use_vad_concat"]`（默认 True）；几乎无静音的连续访谈场景可置 False 规避拼接边界风险
+
+> **风险提示**：拼接处若 VAD 边界截断词句，会影响边界段的 DER；`speech_pad_ms=300` 已提供边界余量。实测对比需关注 DER 与耗时两项指标（PRD FR-003）。
+
 #### 安全机制（v2.15 + v2.17 修订）
 针对说话人分离阶段曾出现的进程崩溃/挂死问题，实施防护：
 
@@ -340,7 +352,7 @@ i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟�
 - 子进程内独立加载 PyAnnote Pipeline 模型，执行推理后将结果通过 `Queue` 传回
 - 子进程异常退出（退出码非 0）由主进程感知并上报；挂死由外部监控发现
 
-详见 [diarization.py](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/src/diarization.py)。
+详见 [diarization.py](file:///Users/kevin/m02_Developer/TRAE_Work_CN/ASR-Local-Thinkpad/asr-local/src/diarization.py)。
 
 ### 3.3 声纹识别 — PyAnnote Embedding
 
@@ -353,7 +365,7 @@ i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟�
 
 声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_local_asr_system.md#fr-003-cluster-声纹簇持久化与标注学习)。
 
-### 3.4 ASR — Qwen3-ASR-0.6B
+### 3.4 ASR — Qwen3-ASR-1.7B
 
 #### 模型类与调用入口（v2.18 重构）
 - **模型类是 `AutoModelForMultimodalLM`**，不是 `AutoModelForSpeechSeq2Seq`——Qwen3-ASR 是语音-文本多模态模型（音频编码器 + Qwen LLM）
@@ -362,23 +374,36 @@ i5-10210U CPU 环境下实际约 2~3 倍实时，1 小时音频约 20~30 分钟�
 - 生成时 `max_new_tokens=512`；`generated_ids = generated[:, inputs["input_ids"].shape[1]:]` 截取新生成部分
 - 语言：`apply_transcription_request(audio=..., language=...)` 传 `zh` 强制中文，或 `None` 自动识别
 - `sampling_rate` 需放进 `processor_kwargs={"sampling_rate": sr}`（直接传会触发 warning）
-- 推理后端：Transformers（本地离线，FP32），不依赖 GPU/vLLM
+- 推理后端：Transformers（本地离线, **FP32**），不依赖 GPU/vLLM
 
-#### 离线加载（v2.18 修复）
-Qwen3-ASR 模型以**自定义解压目录**存放于 `MODELS_DIR/Qwen3-ASR-0.6B-hf/`（含 `config.json` / `model.safetensors` / `tokenizer.json` 等）。
+#### 精度决策与输入对齐（v2.31 踩坑 → v2.32 定稿）
+- **v2.31 曾用默认精度**：1.7B 权重默认 bf16，而 `apply_transcription_request` 产出的音频特征为 float32，直接推理报 `Input type (float) and bias type (c10::BFloat16) should be the same`。当时修复为按模型首层参数 dtype 自动对齐浮点输入：
+  ```python
+  model_dtype = next(self.model.parameters()).dtype
+  if model_dtype in (torch.float16, torch.bfloat16):
+      inputs = {
+          k: (v.to(model_dtype) if v.dtype.is_floating_point else v)
+          for k, v in inputs.items()
+      }
+  ```
+- **v2.32 定稿 FP32**：CPU 无 AVX512-BF16，bf16 回退转换计算慢（3.14× 实时）；FP32 有 oneDNN 优化（1.11× 实时），代价是权重 ~6.8GB、峰值内存 11.8GB（红线放宽至 <12GB）。上述对齐代码保留，fp32 下不触发，兼容将来默认精度模型。
+
+#### 离线加载（v2.18 修复 + v2.32 精度定稿）
+Qwen3-ASR 模型以**自定义解压目录**存放于 `MODELS_DIR/Qwen3-ASR-1.7B-hf/`（含 `config.json` / `model.safetensors` / `tokenizer.json` 等）。v2.32 起显式 `torch_dtype=torch.float32`（FP32 换取 CPU 速度，见上节）。
 
 ```python
-local_dir = MODELS_DIR / "Qwen3-ASR-0.6B-hf"
+local_dir = MODELS_DIR / "Qwen3-ASR-1.7B-hf"
 if local_dir.exists():
     # 完全离线：直接用本地目录加载（不再走 hub 缓存 / 联网）
     self.processor = AutoProcessor.from_pretrained(str(local_dir), token=hf_token)
-    self.model = AutoModelForMultimodalLM.from_pretrained(str(local_dir), ...)
+    self.model = AutoModelForMultimodalLM.from_pretrained(
+        str(local_dir), torch_dtype=torch.float32, low_cpu_mem_usage=True, token=hf_token)
 else:
     # 兜底：hub 缓存(local_files_only) → 联网
     ...
 ```
 
-> **踩坑（v2.18）**：`local_files_only=True + cache_dir` **只认 HF hub 缓存格式**（`models--Qwen--Qwen3-ASR-0.6B-hf/snapshots/...`），匹配不到自定义解压目录时会误判"本地缺失"→ 回退联网下载 → 无外网环境下失败（`Cannot send a request, as the client has been closed.` / `Network is unreachable`）。必须**先检查自定义目录是否存在**，存在则直接按本地路径加载。
+> **踩坑（v2.18）**：`local_files_only=True + cache_dir` **只认 HF hub 缓存格式**（`models--Qwen--Qwen3-ASR-1.7B-hf/snapshots/...`），匹配不到自定义解压目录时会误判"本地缺失"→ 回退联网下载 → 无外网环境下失败（`Cannot send a request, as the client has been closed.` / `Network is unreachable`）。必须**先检查自定义目录是否存在**，存在则直接按本地路径加载。
 
 > **踩坑（v2.18）**：processor 返回的掩码键名是 `input_features_mask` 而非 `attention_mask`；generate 不传 `return_timestamps`/`language`（模型不支持会警告 "not used by the model"）。改为官方 `apply_transcription_request` 入口后这些细节由 processor 自动处理，无需手工拼参。
 
@@ -415,12 +440,26 @@ r"(?P<Y>\d{4})[-_](?P<M>\d{2})[-_](?P<D>\d{2})[-_](?P<h>\d{2})[-_](?P<m>\d{2})[-
 
 ```python
 def move_to_error(src: Path, reason: str = "") -> None:
-    """处理失败时，不移入 error/，只在 error/ 目录下生成 .error.txt 日志文件。
-    v2.17：文件名附加产生错误的时间戳 YYYYMMDD_HHMMSS，避免新旧批次错误同名混淆。"""
+    """处理失败时，将原始音频文件移入 error/ 目录，并生成带时间戳的 .error.txt 日志。
+    v2.36：失败文件统一移入 error/（不再留在收件箱），收件箱只保留待处理文件；
+    移入文件名与 .error.txt 均附加产生错误的时间戳（YYYYMMDD_HHMMSS），
+    防止不同批次 / 不同来源同名文件重名冲突；原始文件保留在 error/ 供排查，
+    用户可手动移回收件箱重新处理。"""
     INBOX_ERROR_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 1) 原始音频文件移入 error/（保留原名；重名时附加时间戳与序号）
+    if src.exists():
+        dest = INBOX_ERROR_DIR / src.name
+        if dest.exists() and dest != src:
+            dest = INBOX_ERROR_DIR / f"{src.stem}_{ts}{src.suffix}"
+            i = 2
+            while dest.exists():
+                dest = INBOX_ERROR_DIR / f"{src.stem}_{ts}_{i}{src.suffix}"
+                i += 1
+        shutil.move(str(src), str(dest))
+    # 2) .error.txt 日志（带时间戳，防重名冲突）
     if reason:
         base = src.stem
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         note = INBOX_ERROR_DIR / f"{base}_{ts}.error.txt"
         i = 2
         while note.exists():
@@ -431,7 +470,7 @@ def move_to_error(src: Path, reason: str = "") -> None:
 
 #### 错误归档（v2.17 重构）
 
-- **共享函数** `src/archive.py::archive_error_files()`：将 `error/` 根目录所有 `.error.txt` 移入 `error/archived/`，文件名附加**原文件创建时间戳**（优先 statx btime，回退 mtime），彻底避免重名
+- **共享函数** `src/archive.py::archive_error_files()`：将 `error/` 根目录**全部错误文件**（`.error.txt` 日志 + 失败音频）移入 `error/archived/`，文件名附加**原文件创建时间戳**（优先 statx btime，回退 mtime），彻底避免重名（v2.36 起含失败音频）
 - **两个调用方复用同一函数**（避免逻辑重复）：
   1. `process_inbox.py::_archive_old_errors()` — 每次处理开始前自动归档上一轮错误
   2. `webui.py::prepare_inbox()` — 「准备处理收件箱」按钮，用户手动触发归档 + 解锁
@@ -443,14 +482,14 @@ def move_to_error(src: Path, reason: str = "") -> None:
 
 ### 4.1 VAD 相关
 - **Silero VAD 参数顺序**（v2.9）：`get_speech_timestamps` 的第三个位置参数是 `threshold`，不是 `sampling_rate`。`sr` 必须作为 `sampling_rate=16000` 关键字参数传入，详见 §3.1。
-- **无有效语音段处理**：静音或噪音文件通过 VAD 后无有效语音段，移入 `error/` 目录并生成 `.error.txt` 说明原因。
+- **无有效语音段处理**：静音或噪音文件通过 VAD 后无有效语音段，**移入 `error/` 目录**并生成带时间戳的 `.error.txt` 日志说明原因（v2.36：失败文件统一移入 error/，见 §3.6）。
 - **Silero 返回采样点而非毫秒（v2.18）**：`get_speech_timestamps` 默认 `return_seconds=False`，返回的 `start`/`end` 是采样点。16kHz 下必须 `/ sr` 转秒；误 `/ 1000` 会把时间放大 16 倍，导致 VAD 与 Diarization 交集永远为空 → "无有效语音段"。详见 §3.1。
 
 ### 4.2 模型加载相关
 - **PyAnnote 版本兼容**：PyAnnote 4.x 与 3.x API 不同，需注意 `use_auth_token` → `token` 的变化。
 - **模型加载超时**：300 秒超时机制防止下载卡死，超时后强制终止并清理进程。
 - **网络问题**：模型加载可能因网络问题卡住，需通过超时机制强制终止。
-- **自定义目录 vs hub 缓存（v2.18）**：`local_files_only=True + cache_dir` 只认 HF hub 缓存格式（`models--org--name/snapshots/...`）。若模型以自定义解压目录存放（如 `models/Qwen3-ASR-0.6B-hf/`），会误判"本地缺失"→ 回退联网 → 无外网时失败。**必须先检查自定义目录是否存在，存在则直接按本地路径加载**（详见 §3.4）。
+- **自定义目录 vs hub 缓存（v2.18）**：`local_files_only=True + cache_dir` 只认 HF hub 缓存格式（`models--org--name/snapshots/...`）。若模型以自定义解压目录存放（如 `models/Qwen3-ASR-1.7B-hf/`），会误判"本地缺失"→ 回退联网 → 无外网时失败。**必须先检查自定义目录是否存在，存在则直接按本地路径加载**（详见 §3.4）。
 - **Qwen3-ASR 是多模态模型（v2.18）**：模型类必须用 `AutoModelForMultimodalLM`（非 `AutoModelForSpeechSeq2Seq`），输入必须走 `processor.apply_transcription_request()` 官方入口——手动拼 `input_features` 会缺 `input_ids` 文本侧，报 `Audio features and audio tokens do not match`；`processor` 返回的掩码键是 `input_features_mask` 而非 `attention_mask`；generate 不支持 `return_timestamps`/`language` 参数。详见 §3.4。
 
 ### 4.3 文本清洗相关
@@ -503,6 +542,7 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
 - **部署地址可配置（v2.23）**：ThinkPad 常随使用场景切换网络（家 `192.168.3.x` / 办公室 `10.44.x.x`），`deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<IP>` 环境变量覆盖（默认当前地址 `kevin@10.44.21.23`）。v2.23 部署验证：平铺重构后 MacBook 与 ThinkPad **18 个运行时文件 md5 全量一致**，`run.sh` 的 `PROJ_ROOT` 修复在运行节点生效（`/home/kevin/asr_sys_local/asr-local`）。
 - **默认路径制造残留目录（v2.21 根治）**：`settings.py` 的默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）只在 `.env` 未加载时生效；而代码里多处 `Path.mkdir(parents=True, exist_ok=True)` 会自动创建这些默认目录——`~/audio_archive`、`~/asr-local/model_cache` 因此各出现过一次并被清理。根源是 CLI 入口（`run.sh`）此前只读 `.hf_token`、不加载 `.env`。v2.21 起 `run.sh` 启动时 `source .env`（`set -a` 导出）并强制注入 `ASR_PROJ_ROOT`，CLI 与 WebUI 共用生产路径。**排查此类残留时看目录名是否为 settings 默认值 + 目录 mtime**。
 - **暂存区与生产区漂移**：MacBook 工程根目录（`ASR-Local-Thinkpad/`）是部署源，但 `deploy_webui.sh` 原先只部署 Web 相关文件，CLI 配套（`run_pipeline.py`/`enroll_voiceprint.py`/`step2_download_models.sh`/`run.sh`）未纳入部署，导致暂存区被改动后与 ThinkPad 生产版本漂移（`src.config.settings` 错误导入、`enroll_voiceprint.py` 中文引号 SyntaxError 等）。v2.19 起部署脚本纳入全部运行时（`config/settings.py` 除外），并新增远端 CLI 导入校验。
+- **`config/settings.py` 为设计例外（v2.33 明确）**：settings.py **不随 `deploy_webui.sh` 部署**（脚本注释），因为生产环境配置与部署源允许且应当存在差异——典型差异是 `MODELS_DIR` 默认值：本地（MacBook 部署源）为 `PROJ_ROOT / "models"`，生产（ThinkPad）为 `PROJ_ROOT / "model_cache"`（实际运行时由 `.env` 的 `HF_HOME` 覆盖，fallback 差异不影响运行）。因此修改 settings.py 时（调整阈值/模型/开关等）必须**手动同步**：① `scp config/settings.py` 覆盖 ThinkPad；② **恢复生产默认值差异**：`sed -i 's|PROJ_ROOT / "models"|PROJ_ROOT / "model_cache"|'`，避免把本地默认值带进生产；③ settings.py 同样不入 git（`.gitignore`）。**判断两端 settings.py 是否一致时，忽略 MODELS_DIR 默认值这一处差异**（这是唯一预期差异）。
 - **一次性过程稿不进部署源**：`step1_setup.sh` 是初装期一次性脚本，路径停留在旧布局（`~/asr-local`、`~/audio_archive`、`model_cache`），不再匹配当前 `~/asr_sys_local/` + `models/` 布局，v2.19 删除；`systemd/asr-webui.service` 与 `install_services.sh` 的 .env 模板同步对齐生产路径（含"用户级 service 不含 User/Group 行"约束）。
 - **命名残留清理**：VAD 切换为 Silero 后遗留的 `PyAnnoteVad` 别名、`pipeline.py` 中混用的相对/绝对导入、`webui.py` 复制的 `AUDIO_EXTS`、`process_inbox.py` 重复定义的 `BJT`、`voiceprint.py` 未用的 `db_conn` 参数等一次性清理，保持单一事实来源（统一从 `config.settings` 导入、统一 `src.*` 绝对导入）。
 
@@ -534,7 +574,7 @@ FORMAT_PRIORITY = {
 
 ```python
 TIME_SOURCE_PRIORITY = ["filename", "file_birthtime"]
-TIME_SOURCE_MISMATCH_THRESHOLD = 300  # 5 分钟
+TIME_SOURCE_MISMATCH_THRESHOLD_SECONDS = 300  # 5 分钟
 ORGANIC_OUTPUT_FORMAT = "absolute"     # absolute / relative / both
 TIMEZONE = "Asia/Shanghai"
 ```
@@ -546,11 +586,12 @@ VAD_CONFIG = {
     "threshold":         0.5,
     "min_speech_len_s":  0.25,
     "min_silence_len_s": 0.1,
-    "max_speech_len_s":  30.0,
     "speech_pad_ms":     300,
     "sample_rate":       16000,
 }
 ```
+
+> v2.33：移除 `max_speech_len_s`（30.0）——原为"单段语音最大时长"预留配置，代码从未读取（Silero 默认不限制），属残留死配置。
 
 ### 5.5 内存编排
 
@@ -607,6 +648,12 @@ MEMORY_CONFIG = {
 | v2.28 | 2026-08-03 | **README 上提仓库根 + 英文化**: ① README 由 `asr_sys_local/asr-local/` 移至仓库根 `asr_sys_local/README.md`（GitHub 仅在仓库根展示 README）；② 全文改写为英文（本地运行、数据不出本机、离线推理为核心理念）；③ 目录树同步——README/PRD/TDD 并列一级目录（§4.8）；④ GitHub 仓库 **Description（英文）需在网页 About 设置**——本机无 gh CLI/GitHub token，无法命令行设置，提供文案待用户粘贴 |
 | v2.29 | 2026-08-03 | **git 仓库根外置，README 落仓库根**: ① v2.28 将 README 放在 `asr_sys_local/README.md`，但 GitHub 只在 **git 仓库根**渲染 README，故仍不显示——本次将 git 仓库根与工程总目录解耦：**git 仓库根 = `ASR-Local-Thinkpad/`**（README.md/.gitignore 在此，GitHub 首页渲染 README），**工程总目录 = `asr_sys_local/`**（与运行节点一致，含 asr-local/audio_archive/audio_inbox/PRD/TDD）（§4.8）；② README 目录树改为以仓库根为根绘制 |
 | v2.30 | 2026-08-03 | **仓库扁平化（去除 asr_sys_local 包裹层）**: ① git 仓库根由"ASR-Local-Thinkpad + asr_sys_local 两级"扁平为**一级**——README.md/.gitignore/代码目录 `asr-local/`/数据目录 `audio_archive|audio_inbox`（.gitkeep 占位）/PRD/TDD 全部位于仓库根，与运行节点 `/home/kevin/asr_sys_local/` 内容一一对应（§4.8）；② `deploy_webui.sh` LOCAL_ROOT（脚本自定位）与 `REMOTE_ROOT` 硬编码均不受影响，ThinkPad 生产路径零改动；③ README 目录树、§4.8 结构图同步为扁平结构 |
+| v2.31 | 2026-08-03 | **ASR 升级 1.7B + VAD 静音切除加速说话人分离**: ① **ASR 0.6B→1.7B**（§2.1、§3.4）——`ASR_CONFIG.model_repo` 改为 `Qwen/Qwen3-ASR-1.7B-hf`、本地目录 `MODELS_DIR/Qwen3-ASR-1.7B-hf/`；**移除 `torch_dtype=torch.float32` 显式强转**，跟随模型默认精度（safetensors 半精度存储 ~3.4GB），CPU 推理由 PyTorch 自动处理半精度算子，峰值内存仍 < 6GB；② **VAD 拼接切除静音**（§3.2）——`src/utils/audio_utils.py` 新增 `build_speech_concatenation()`（合并重叠段→逐段拼接→`map_back` 映射表把拼接轴时间线性映射回原始轴），`diarization.py` 的 `Diarizer.run()` 新增 `vad_segments` 参数，子进程隔离模式经 `_write_temp_wav()` 写临时 wav 供子进程加载；`DIARIZATION_CONFIG.use_vad_concat` 开关（默认 True）；③ pipeline 传入 `vad_segments=vad_segs`（对下游时间戳无感） |
+| v2.32 | 2026-08-03 | **ASR 精度定稿 FP32 + 内存红线放宽 6GB→12GB**: ① **显式 `torch_dtype=torch.float32`**（§3.4）——v2.31 默认精度实测为 bf16，CPU 无 AVX512-BF16 回退转换计算慢（3.14× 实时 / 5.2GB）；FP32 有 oneDNN 优化，实测 **1.11× 实时**（93s 语音 103s）、峰值内存 **11.8GB**；② **内存红线 <6GB → <12GB**（PRD §5.1）：FP32 权重 ~6.8GB + 运行时 ~11.8GB，16GB 系统留 ~4GB 余量；若内存紧张可回退 bf16（移除 torch_dtype 参数）；③ bf16 输入对齐代码保留（fp32 下不触发），§3.4 记录两精度实测数据 |
+| v2.33 | 2026-08-03 | **死配置清理 + 文档/界面与实际对齐**: ① **移除 `VAD_CONFIG.max_speech_len_s`（30.0）**（§5.4）——该键原为 Silero "单段语音最大时长"预留，代码从未读取（Silero 默认不限制），属残留死配置；② WebUI「音频处理流程」面板模型名 0.6B→**1.7B**、02 步骤描述补充"VAD 拼接切除静音加速"、03 步骤描述补充"声纹库/已标注声纹簇比对 + 新建 unknown 编号"（§1.5）；③ PRD FR-003-VID 重写为与实际一致（§3.3 索引不变）；④ 文档头部版本号与变更日志对齐（v1.7/v3.7 遗留 → v2.33）；⑤ **§4.8 明确 `config/settings.py` 设计例外**：不随部署、改动需手动 scp + sed 恢复生产 `MODELS_DIR=model_cache` 默认值、两端该差异属预期 |
+| v2.34 | 2026-08-04 | **处理成果统计口径修正（webui.py / run.sh）**: ① `get_stats()`（scripts/webui.py）——首页"转录片段"（`COUNT(*)` 片段数，数字偏大）改为**"音频数量"**（`COUNT(DISTINCT file_hash)`，与归档音频数对齐），并移除口径重复的原"处理文件"格子；② **累计时长虚高根因修复**——pipeline 为每个片段行写入**整文件时长** `duration_s`（src/pipeline.py 逐行同一值），原 `SUM(audio_duration)` 会把同一文件按片段数重复累加；改为子查询按 `file_hash` 分组取 `MAX(audio_duration)` 求和后再 /3600 显示小时（SQL 见 [PRD §8.1.2](./PRD_local_asr_system.md#812-处理统计信息来源-sqlite-数据库-transcripts-表)）；③ `run.sh` 菜单 5 CLI 摘要同步同一修复（§4.8 部署含 run.sh） |
+| v2.35 | 2026-08-04 | **全文一致性 Review 清理（run.sh / step2 / 文档）**: ① `run.sh` banner 模型组合 0.6B→**1.7B**、收件箱提示"选 1/2 处理"改为"看板手动触发"、声纹录入提示"声纹库 1 号仅一条"改为"is_owner 标记，仅一条"（对齐 PRD FR-003-VID）；② `step2_download_models.sh` 下载模型 0.6B→**1.7B**（`Qwen/Qwen3-ASR-1.7B-hf`，~4.1GB）、末段"录入本人声纹（1 号必须）"改为"标注学习为主流程、CLI 录入可选补充"（§4.8）；③ 修复 §3.2 [diarization.py] `file:///` 链接缺 `asr-local/` 段；④ §4.1"无有效语音段移入 error/"更正为"不移文件、仅生成 .error.txt"（与 §3.6/PRD FR-001-AR 一致）；⑤ §5.3 配置名补 `_SECONDS`（`TIME_SOURCE_MISMATCH_THRESHOLD_SECONDS`）对齐 settings.py；⑥ PRD §6.1/§9/§11.3 模型下载表述修正（hf-mirror 实测不可用 → huggingface-cli + 代理/ModelScope 兜底，v2.31 经验） |
+| v2.36 | 2026-08-04 | **失败文件处理恢复"移入 error/"（archive.py / process_inbox.py）**: ① `move_to_error()`（src/archive.py §3.6）——处理失败时把**原始音频文件移入 error/ 目录**（保留原名，重名时附加产生错误时间戳与序号），`.error.txt` 仍带时间戳防重名（v2.9 曾改为"仅写日志不移文件"，v2.36 恢复移入，收件箱只保留待处理文件；用户可手动移回重试）；② `archive_error_files()`——归档范围由仅 `.error.txt` 扩展为 **`.error.txt` 日志 + 失败音频**一并移入 `error/archived/`（命名附原文件创建时间戳防重名）；③ `process_inbox.py` 新增 `_move_failed_group()`（§3.6）——失败分支把仍留在收件箱的主文件 + 同 stem 兄弟文件一并移入 error/，避免下次扫描把次优格式兄弟文件当主格式处理（FR-001-MULTI）；④ §4.1 无有效语音段处理同步（移入 error/ + 日志）；⑤ pipeline 各失败分支（重复文件/加载/VAD/Diarization/ASR/无有效语音段）经 `move_to_error` 统一生效 |
 
 ---
 

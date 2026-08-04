@@ -1,9 +1,11 @@
 """音频 IO 工具：统一 16kHz 单声道加载；用 soundfile / pydub / librosa，避开 torchcodec（CPU 环境缺 CUDA 库）"""
 from __future__ import annotations
 
+import bisect
 import gc
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import soundfile as sf
@@ -72,3 +74,82 @@ def segment_waveform(full: AudioLoad, start_s: float, end_s: float) -> torch.Ten
     if e <= s:
         e = s + 1
     return full.waveform[:, s:e].contiguous()
+
+
+def build_speech_concatenation(
+    audio: AudioLoad,
+    vad_segments,
+    *,
+    gap_threshold_s: float = 0.1,
+) -> tuple[AudioLoad, Callable[[float], float]]:
+    """按 VAD 语音段拼接音频，切除静音，用于加速说话人分离（v2.31）。
+
+    原理：PyAnnote Diarization 的 segmentation 滑窗按"总时长"遍历，静音也在白白计算；
+    先按 Silero VAD 段拼接成连续音频，把输入长度压缩为"语音总时长"，
+    分离结果的时间戳再映射回原始时间轴（对调用方完全无感）。
+
+    - 拼接前先合并重叠/紧邻段：Silero 输出含 speech_pad_ms 边界，相邻语音段可能重叠，
+      gap < gap_threshold_s 的段视为同一次说话，合并后切割边界更干净。
+    - 映射函数 map_back(t_concat) -> t_original：拼接轴时间按段内线性比例映射回原始轴。
+    - 段间按 VAD 边界紧邻拼接（不额外补静音），段内保留原始波形。
+    - 若没有语音段，原样返回（map_back 为恒等函数）。
+
+    vad_segments: 任意带 start_offset_s / end_offset_s 字段的对象列表（鸭子类型，避免循环依赖）。
+    """
+    if not vad_segments:
+        return audio, lambda t: float(t)
+
+    # 1. 合并重叠/紧邻段
+    merged: list[tuple[float, float]] = []
+    for seg in sorted(vad_segments, key=lambda s: s.start_offset_s):
+        s, e = float(seg.start_offset_s), float(seg.end_offset_s)
+        if e <= s:
+            continue
+        if merged and s <= merged[-1][1] + gap_threshold_s:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    if not merged:
+        return audio, lambda t: float(t)
+
+    # 2. 按合并后的语音段拼接波形
+    sr = audio.sample_rate
+    wav = audio.waveform  # (1, T)
+    pieces: list[tuple[int, int]] = []
+    for s, e in merged:
+        si, ei = int(round(s * sr)), int(round(e * sr))
+        if ei > si:
+            pieces.append((si, ei))
+    if not pieces:
+        return audio, lambda t: float(t)
+
+    parts = [wav[:, si:ei] for si, ei in pieces]
+    concat_wav = torch.cat(parts, dim=1)
+    concat_dur = float(concat_wav.shape[1]) / sr
+    concat_audio = AudioLoad(
+        waveform=concat_wav, sample_rate=sr,
+        duration_s=concat_dur, original_path=audio.original_path,
+    )
+
+    # 3. 拼接轴 -> 原始轴 映射表：(concat_start, concat_end, orig_start, orig_end)
+    table: list[tuple[float, float, float, float]] = []
+    cursor = 0.0
+    for si, ei in pieces:
+        cs, ce = cursor, cursor + (ei - si) / sr
+        table.append((cs, ce, si / sr, ei / sr))
+        cursor = ce
+    concat_starts = [t[0] for t in table]
+
+    def map_back(t: float) -> float:
+        if t <= 0.0:
+            return table[0][2]
+        idx = bisect.bisect_right(concat_starts, t) - 1
+        if idx < 0:
+            idx = 0
+        cs, ce, os_, oe = table[idx]
+        if t >= ce:
+            return oe
+        frac = (t - cs) / (ce - cs) if ce > cs else 0.0
+        return os_ + frac * (oe - os_)
+
+    return concat_audio, map_back

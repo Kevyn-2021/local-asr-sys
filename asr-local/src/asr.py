@@ -1,10 +1,12 @@
 """
-Qwen3-ASR-0.6B-hf 封装 — PRD FR-004
+Qwen3-ASR-1.7B-hf 封装 — PRD FR-004
 - 纯 CPU 推理，关闭 flash attn
 - Transformers >=5.13 才能使用（实测 5.14.1 OK）
 - 输入一段 (1,T) 的 torch tensor waveform，输出 text + 置信度
 - 模型类是 AutoModelForMultimodalLM（Qwen3-ASR 是多模态模型，非 SpeechSeq2Seq）
 - 输入必须通过 processor.apply_transcription_request() 构建（v2.18 重构）
+- v2.31 升级 1.7B（默认精度 bf16）；v2.32 改回显式 FP32 换取 CPU 推理速度——
+  1.7B fp32 权重 ~6.8GB，内存红线已放宽至 <12GB（实测峰值 11.8GB，16GB 系统留 ~4GB），实测见 PRD §5.1
 """
 from __future__ import annotations
 
@@ -33,12 +35,14 @@ class QwenAsr:
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         repo = ASR_CONFIG["model_repo"]
         # v2.18 离线加载修复：Qwen3-ASR 模型以"自定义解压目录"存放于
-        # MODELS_DIR/Qwen3-ASR-0.6B-hf/（含 config.json / model.safetensors / tokenizer 等）。
+        # MODELS_DIR/Qwen3-ASR-1.7B-hf/（含 config.json / model.safetensors / tokenizer 等）。
         # 注意 local_files_only=True + cache_dir 只认 HF hub 缓存格式
-        # （models--Qwen--Qwen3-ASR-0.6B-hf/snapshots/...），匹配不到自定义目录时会
+        # （models--Qwen--Qwen3-ASR-1.7B-hf/snapshots/...），匹配不到自定义目录时会
         # 回退联网下载，在无外网环境下直接失败（Cannot send a request / Network unreachable）。
         # 因此加载顺序：自定义目录 → hub 缓存(local_files_only) → 联网兜底。
-        local_dir = MODELS_DIR / "Qwen3-ASR-0.6B-hf"
+        # v2.32：显式 torch_dtype=torch.float32——1.7B 默认精度为 bf16，
+        # CPU 上 bf16 无 AVX512-BF16 指令回退转换，速度约 3.1× 实时；fp32 有 oneDNN 优化更快。
+        local_dir = MODELS_DIR / "Qwen3-ASR-1.7B-hf"
         if local_dir.exists():
             log.info("[asr] 使用本地模型目录 %s（完全离线）", local_dir)
             local_kwargs = {"token": hf_token}
@@ -84,6 +88,15 @@ class QwenAsr:
                 processor_kwargs={"sampling_rate": sr},
             )
             inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+            # v2.31 踩坑修复：1.7B 默认精度为 bf16，音频特征（float32）需对齐模型 dtype，
+            # 否则报 "Input type (float) and bias type (c10::BFloat16) should be the same"。
+            # v2.32 起显式 fp32 加载（float32 不触发此分支），保留以兼容默认精度模型。
+            model_dtype = next(self.model.parameters()).dtype
+            if model_dtype in (torch.float16, torch.bfloat16):
+                inputs = {
+                    k: (v.to(model_dtype) if v.dtype.is_floating_point else v)
+                    for k, v in inputs.items()
+                }
 
             generated = self.model.generate(**inputs, max_new_tokens=512)
             generated_ids = generated[:, inputs["input_ids"].shape[1]:]

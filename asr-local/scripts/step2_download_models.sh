@@ -53,9 +53,9 @@ if [ "$login_ok" != "true" ]; then
 fi
 
 echo "============================================="
-echo "[1/4] 下载 Qwen3-ASR-0.6B-hf (~1.2GB)"
+echo "[1/4] 下载 Qwen3-ASR-1.7B-hf (~4.1GB)"
 echo "============================================="
-"$HUGGINGFACE_CLI" download --repo-type model Qwen/Qwen3-ASR-0.6B-hf --local-dir "$MODELS/Qwen3-ASR-0.6B-hf" --local-dir-use-symlinks False
+"$HUGGINGFACE_CLI" download --repo-type model Qwen/Qwen3-ASR-1.7B-hf --local-dir "$MODELS/Qwen3-ASR-1.7B-hf" --local-dir-use-symlinks False
 
 echo ""
 echo "============================================="
@@ -100,8 +100,9 @@ echo "  全部模型下载完成 ✓"
 echo "============================================="
 du -sh "$MODELS"/* 2>/dev/null
 echo ""
-echo "下一步：录入你本人声纹（声纹库 1 号，必须）"
-echo "  准备一段 1~3 分钟干净语音 WAV：/path/to/owner.wav"
+echo "下一步（可选）：录入某位说话人的声纹"
+echo "  主流程为「标注学习」——处理音频自动抓声纹、Web 看板标注姓名即可，无需专门录入；"
+echo "  如需高质量固定段落样本，可补充录入（is_owner 标记仅一条）:"
 echo "  $PY scripts/enroll_voiceprint.py --name '我' --is-owner /path/to/owner.wav"
 echo ""
 echo "之后：处理单个文件试试 →"

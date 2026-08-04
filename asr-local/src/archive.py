@@ -104,8 +104,8 @@ def archive_audio(src: Path, recording_start: datetime, duration_s: float) -> tu
 
 
 def archive_error_files() -> int:
-    """将 error/ 根目录下的 .error.txt 移入 archived/ 子文件夹，文件名附加原文件创建时间戳。
-    供 WebUI「准备处理收件箱」按钮与 process_inbox.py 复用（v2.17）。
+    """将 error/ 根目录下的全部错误文件（.error.txt 日志 + 失败音频文件）移入 archived/ 子文件夹，
+    文件名附加原文件创建时间戳防重名。供 WebUI「准备处理收件箱」按钮与 process_inbox.py 复用（v2.17；v2.36 起含失败音频）。
     返回归档的文件数。"""
     if not INBOX_ERROR_DIR.exists():
         return 0
@@ -114,9 +114,6 @@ def archive_error_files() -> int:
     count = 0
     for f in sorted(INBOX_ERROR_DIR.iterdir()):
         if not f.is_file():
-            continue
-        # 注意：Path.suffix 只返回最后一个后缀(.txt)，必须用 endswith 匹配 .error.txt
-        if not f.name.lower().endswith(".error.txt"):
             continue
         try:
             # 取文件创建时间作为时间戳（优先 statx btime，回退 mtime）
@@ -137,14 +134,26 @@ def archive_error_files() -> int:
 
 
 def move_to_error(src: Path, reason: str = "") -> None:
-    """处理失败时，不移入 error/，只在 error/ 目录下生成 .error.txt 日志文件。
-    原始音频文件保留在收件箱中，待问题修复后可重新处理。
-    v2.17：文件名附加产生错误的时间戳（YYYYMMDD_HHMMSS），避免与历史错误混淆重名。"""
+    """处理失败时，将原始音频文件移入 error/ 目录，并生成带时间戳的 .error.txt 日志。
+    v2.36：失败文件统一移入 error/（不再留在收件箱），收件箱只保留待处理文件；
+    移入文件名与 .error.txt 均附加产生错误的时间戳（YYYYMMDD_HHMMSS），
+    防止不同批次 / 不同来源同名文件重名冲突；原始文件保留在 error/ 供排查，
+    用户可手动移回收件箱重新处理。"""
     INBOX_ERROR_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 1) 原始音频文件移入 error/（保留原名；重名时附加时间戳与序号）
+    if src.exists():
+        dest = INBOX_ERROR_DIR / src.name
+        if dest.exists() and dest != src:
+            dest = INBOX_ERROR_DIR / f"{src.stem}_{ts}{src.suffix}"
+            i = 2
+            while dest.exists():
+                dest = INBOX_ERROR_DIR / f"{src.stem}_{ts}_{i}{src.suffix}"
+                i += 1
+        shutil.move(str(src), str(dest))
+    # 2) .error.txt 日志（带时间戳，防重名冲突）
     if reason:
-        # 用源文件名（不含路径）作为 .error.txt 的基准名，追加当前时间戳
         base = src.stem
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         note = INBOX_ERROR_DIR / f"{base}_{ts}.error.txt"
         i = 2
         while note.exists():
