@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.38  
+**版本**: v2.39  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -512,7 +512,7 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
 
 ### 4.7 WebUI 样式踩坑
 - **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
-- **顶部锁定导航条（v2.38）**：页首 + 页签同排（`st.columns`）后整条吸顶。两个关键坑：① **不能用 `:first-child` 定位吸顶行**——CSS 注入的 `st.markdown` 才是主 vertical block 的第一个元素，必须用 `:has(.topbar-title)` 精确定位页首行；② **吸顶条留白不能用元素 margin**——sticky 元素的 margin 区域透明，下层内容滚动时会从 margin 处透出，留白一律用 padding，并把行内 markdown/导航控件的 margin 压为 0。
+- **顶部锁定导航条（v2.38 实现 / v2.39 修复生效）**：页首 + 页签同排（`st.columns`）后整条吸顶。关键坑：① **不能用 `:first-child` 定位吸顶行**——CSS 注入的 `st.markdown` 才是主 vertical block 的第一个元素，必须用 `:has(.topbar-title)` 精确定位页首行；② **吸顶目标必须是 `stLayoutWrapper` 而非 `stElementContainer`**——Streamlit 1.60 的 `st.columns` 顶层容器是 `stLayoutWrapper`（实测 sticky 有效），`stElementContainer` 只是列内部元素的包装（v2.38 因此整块样式未命中：不吸顶、无底边框、无留白）；③ **吸顶条留白不能用元素 margin**——sticky 元素的 margin 区域透明，下层内容滚动时会从 margin 处透出，留白一律用 padding；④ **分段控件 1.60 渲染为 `div[role="radiogroup"]`+button**（`stSegmentedControl label` 结构已不存在），选中态用 `button[aria-checked="true"]`，老版本规则保留兜底。
 
 ### 4.8 工程组织与部署
 
@@ -657,6 +657,7 @@ MEMORY_CONFIG = {
 | v2.36 | 2026-08-04 | **失败文件处理恢复"移入 error/"（archive.py / process_inbox.py）**: ① `move_to_error()`（src/archive.py §3.6）——处理失败时把**原始音频文件移入 error/ 目录**（保留原名，重名时附加产生错误时间戳与序号），`.error.txt` 仍带时间戳防重名（v2.9 曾改为"仅写日志不移文件"，v2.36 恢复移入，收件箱只保留待处理文件；用户可手动移回重试）；② `archive_error_files()`——归档范围由仅 `.error.txt` 扩展为 **`.error.txt` 日志 + 失败音频**一并移入 `error/archived/`（命名附原文件创建时间戳防重名）；③ `process_inbox.py` 新增 `_move_failed_group()`（§3.6）——失败分支把仍留在收件箱的主文件 + 同 stem 兄弟文件一并移入 error/，避免下次扫描把次优格式兄弟文件当主格式处理（FR-001-MULTI）；④ §4.1 无有效语音段处理同步（移入 error/ + 日志）；⑤ pipeline 各失败分支（重复文件/加载/VAD/Diarization/ASR/无有效语音段）经 `move_to_error` 统一生效 |
 | v2.37 | 2026-08-04 | **settings.py 入 git 口径修正（v2.33 设计例外的口径修正）**: ① settings.py **纳入 git 版本管理**——以 **ThinkPad 生产版本为基准**上传（`MODELS_DIR` 默认值统一为 `PROJ_ROOT / "model_cache"`，MacBook 本地已替换为生产版本，两端文件完全一致；原"本地 models / 生产 model_cache"差异消除，MacBook 无模型权重/无 .env，统一无副作用）；② 设计例外口径修正为"**不随 `deploy_webui.sh` 部署**（设计约定：部署覆盖会冲掉 ThinkPad 上手工调整的配置，运行时由 `.env` 覆盖）而非'不入 git'"——撤销上一轮的 `git rm --cached` 与 `.gitignore` 排除，恢复跟踪（§4.8）；③ `deploy_webui.sh` 注释同步；④ 此后修改 settings.py：手动 `scp` 同步到 ThinkPad + 提交 git（两端内容相同，无需 sed 恢复默认值） |
 | v2.38 | 2026-08-04 | **顶部锁定导航条（webui.py §4.7 / PRD §8.2）**: ① 页首（标题 + 北京时间）与页签导航**合并为同一行**——`st.columns([1.2, 1.8])` 左品牌右导航，品牌块 = 暖赭方块 + 标题 + 时间小字副标（原 `.page-header`/`.page-title`/`.page-time` 样式移除，改为 `.topbar-*`）；② 整条 `position: sticky; top: 0` 吸顶（页底色 + 底部分隔线 + 轻阴影），滚动时导航始终可见；③ **两个关键坑**：吸顶行用 `:has(.topbar-title)` 定位（`:first-child` 会命中 CSS 注入的 st.markdown）；吸顶条留白用 padding 不用 margin（sticky 元素 margin 透明、下层内容透出）；④ 分段控件 label min-width 9em→8.5em 适配同排布局；⑤ 文档头部版本号 + PRD §8.2 设计要点/线框图 + 变更日志同步 |
+| v2.39 | 2026-08-04 | **顶部锁定导航条修复（webui.py §4.7 / PRD §8.2）**: ① **吸顶选择器修正**——Streamlit 1.60 实测 `st.columns` 顶层容器为 **`stLayoutWrapper`**（`stElementContainer` 只是列内元素包装），v2.38 用 `stElementContainer` 导致吸顶/底边框/留白全部未生效（无头 Chrome 实测 DOM + 注入 sticky 验证）；② **页签与下方面板间距加大**——吸顶条 `padding-bottom` 0.9rem→**1.15rem**，四个 tab 间距一致；③ **分段控件适配 1.60 新渲染**——`stSegmentedControl label` 结构不存在，改为 `div[role="radiogroup"] button`（`aria-checked="true"` 选中态恢复 KVI 暖赭高亮 + min-width 8.5em），老版本 label 规则保留兜底；④ 部署验证：无头 Chrome 滚动后 topbarTop=0、`cssHit=1` |
 
 ---
 

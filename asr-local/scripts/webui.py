@@ -4,7 +4,7 @@ Streamlit Web Dashboard — PRD FR-008
 
 UI v2.0 — KVI 视觉风格重构：
 - 导航：st.segmented_control 分段控件，每个页签是独立区块，不再依赖脆弱的 CSS 覆盖
-- 顶部锁定导航条（v2.38）：页首（标题+时间）与页签同排，整条吸顶，滚动时始终可见
+- 顶部锁定导航条（v2.38 实现 / v2.39 修复生效）：页首（标题+时间）与页签同排，整条吸顶，滚动时始终可见
 - 布局：st.container(border=True) 面板，面板头部 = 标题 + 分隔线，区块边界明确
 - 排版：代码块行高锁定 1.5；搜索/文件浏览上下堆叠；文本预览限高滚动
 - 色彩：灰阶为基（85%），暖赭 #b86a48 作唯一强调色（5%）
@@ -54,7 +54,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-04-23:49:18"
+UI_VERSION = "2026-08-05-00:04:54"
 
 st.set_page_config(page_title="ASR 本地转录系统", page_icon="🎙️", layout="wide")
 
@@ -146,28 +146,38 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
 }
 
 /* 吸顶条：用 :has(.topbar-title) 定位"页首+导航"所在的行容器
-   （不能用 :first-child——CSS 注入的 st.markdown 才是页面第一个元素） */
-.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) {
+   （不能用 :first-child——CSS 注入的 st.markdown 才是页面第一个元素；
+    也不能用 stElementContainer——Streamlit 1.60 的 st.columns 顶层容器是 stLayoutWrapper，
+    stElementContainer 只是列内部元素各自的包装，实测 sticky 无效） */
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) {
     position: sticky; top: 0; z-index: 100;
     background: var(--bg-page);
     border-bottom: 1px solid var(--line);
     box-shadow: 0 2px 8px rgba(31, 27, 23, 0.05);
-    padding: 0.8rem 0 0.9rem 0;
+    padding: 0.8rem 0 1.15rem 0;   /* 底部留白：页签与下方面板拉开距离 */
 }
 /* 行内垂直居中：导航与品牌块对齐 */
-.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) [data-testid="stHorizontalBlock"] {
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) [data-testid="stHorizontalBlock"] {
     align-items: center;
 }
-/* 吸顶条内部：标题 markdown 与导航控件 margin 压掉（防透底） */
-.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) div[data-testid="stMarkdownContainer"] {
+/* 吸顶条内部：标题 markdown margin 压掉（防透底） */
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[data-testid="stMarkdownContainer"] {
     margin-bottom: 0 !important;
 }
-.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) div[data-testid="stSegmentedControl"],
-.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) div[data-testid="stRadio"] {
-    margin: 0;
-}
 
-/* ── 分段导航 ── */
+/* ── 分段导航 ──
+   Streamlit 1.60 渲染为 div[role="radiogroup"] + button（stSegmentedControl label 结构已不存在）；
+   老版本 stSegmentedControl label 规则保留在下方 */
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button {
+    cursor: pointer; min-width: 8.5em;
+}
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"],
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"] * {
+    background: var(--accent-soft) !important;
+    border-color: var(--accent) !important;
+    color: var(--accent) !important;
+    font-weight: 600;
+}
 div[data-testid="stSegmentedControl"] label {
     min-width: 8.5em;
 }

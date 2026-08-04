@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v2.38  
+**版本**: v2.39  
 **日期**: 2026-08-04  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -1032,6 +1032,7 @@ $ bash run.sh
 | v2.36 | 2026-08-04 | **失败文件处理回归"移入 error/"**：① FR-001-AR / FR-001-MULTI——处理失败时原始音频文件**移入 `error/` 目录**（重名时附加产生错误时间戳），同 stem 兄弟文件一并移入，`.error.txt` 日志带时间戳防重名（v2.9 曾改为"仅留日志不移文件"，本次按实际需求恢复移入，收件箱只保留待处理文件；用户排查后可手动移回重试）；② 旧错误归档（「准备处理收件箱」/自动）范围扩展为日志 + 失败音频一并归档到 `error/archived/`；③ §8.1.6 错误目录说明同步；工程细节见 [TDD v2.36](./TDD_local_asr_system.md#6-变更日志) |
 | v2.37 | 2026-08-04 | **settings.py 版本管理口径修正**：① settings.py **纳入 git**（以 ThinkPad 生产版本为基准上传，`MODELS_DIR` 默认统一 `model_cache`，MacBook/ThinkPad 两端一致）——其设计例外是"**不随 `deploy_webui.sh` 部署**"而非"不入 git"；② `.gitignore` 移除 settings.py 排除、恢复 git 跟踪；工程细节见 [TDD v2.37](./TDD_local_asr_system.md#6-变更日志) |
 | v2.38 | 2026-08-04 | **顶部锁定导航条（FR-008 UI）**：页首（标题 + 北京时间）与页签导航合并为同一行（左品牌右导航），整条 `position: sticky` 吸顶——滚动页面时导航始终可见，任意页可随时切换；吸顶条留白用 padding（sticky 元素 margin 区域透明、下层内容会透出）；工程细节见 [TDD v2.38](./TDD_local_asr_system.md#6-变更日志) |
+| v2.39 | 2026-08-04 | **顶部锁定导航条修复（FR-008 UI）**：① 吸顶修复——Streamlit 1.60 的 `st.columns` 顶层容器为 `stLayoutWrapper`（非 `stElementContainer`），v2.38 选择器未命中导致吸顶与吸顶条样式整体未生效；② 页签与下方面板间距加大（吸顶条底部留白 0.9rem→1.15rem），各 tab 间距一致；③ 页签选中态适配 1.60 的 `role="radiogroup"`+button 渲染，恢复 KVI 暖赭高亮；工程细节见 [TDD v2.39](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 
