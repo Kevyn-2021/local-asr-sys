@@ -4,7 +4,7 @@ Streamlit Web Dashboard — PRD FR-008
 
 UI v2.0 — KVI 视觉风格重构：
 - 导航：st.segmented_control 分段控件，每个页签是独立区块，不再依赖脆弱的 CSS 覆盖
-- 顶部锁定导航条（v2.40 定稿）：页首（Local ASR System + 北京时间）与页签同排，整条吸顶，滚动时始终可见
+- 顶部锁定导航条（v2.41 定稿）：页首单行（Local ASR System + 北京时间）与页签同排，整条吸顶，滚动时始终可见
 - 布局：st.container(border=True) 面板，面板头部 = 标题 + 分隔线，区块边界明确
 - 排版：代码块行高锁定 1.5；搜索/文件浏览上下堆叠；文本预览限高滚动
 - 色彩：灰阶为基（85%），暖赭 #b86a48 作唯一强调色（5%）
@@ -54,7 +54,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-05-00:26:40"
+UI_VERSION = "2026-08-05-00:36:23"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 
@@ -125,17 +125,17 @@ div[data-testid="stAlert"] {
 }
 div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
 
-/* ── 顶部锁定导航条（v2.38 实现 / v2.40 品牌改版）：页首 + 导航同排，整条吸顶 ──
+/* ── 顶部锁定导航条（v2.38 实现 / v2.41 单行定稿）：页首 + 导航同排，整条吸顶 ──
    结构：第一行 st.columns = [品牌标题块 | 分段导航]。
    关键：sticky 元素的 margin 区域是透明的，下层内容滚动时会从 margin 处透出，
    所以吸顶条的留白一律用 padding；标题/导航自身的 margin 在此置 0。 */
 .topbar-title {
-    display: flex; flex-direction: column; gap: 3px;
+    display: flex; flex-direction: row; align-items: baseline; gap: 12px;
     padding-left: 0.5rem;   /* 品牌块整体右移，避免贴着左边界（v2.40） */
+    white-space: nowrap;     /* 单行布局：标题与北京时间不换行（v2.41） */
 }
 .topbar-brand {
-    font-size: 1.45rem; font-weight: 700; color: var(--fg-0);
-    letter-spacing: -0.01em; line-height: 1.2;
+    font-size: 1.05rem; font-weight: 600; color: var(--fg-0);  /* 与面板标题字号一致（v2.41） */
 }
 .topbar-time {
     font-size: 0.82rem; color: var(--fg-3); font-weight: 400;
@@ -166,6 +166,9 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
    老版本 stSegmentedControl label 规则保留在下方 */
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button {
     cursor: pointer; min-width: 8.5em;
+}
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] {
+    margin-left: 0.75rem;   /* 导航整体往右一点点（v2.41） */
 }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"],
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"] * {
@@ -1059,7 +1062,7 @@ def render_segment_audio(row: dict):
 
 NAV_OPTIONS = ["概览 · 状态", "处理记录", "声纹库 · 数据库", "搜索 · 文件"]
 
-# ── 顶部锁定导航条：页首（标题+时间）与导航同排，整条吸顶（CSS） ──
+# ── 顶部锁定导航条：页首（标题+时间同排）与导航同排，整条吸顶（CSS） ──
 col_brand, col_nav = st.columns([1.2, 1.8], gap="medium")
 with col_brand:
     st.markdown(
