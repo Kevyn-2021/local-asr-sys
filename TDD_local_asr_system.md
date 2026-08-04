@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.37  
+**版本**: v2.38  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -512,6 +512,7 @@ ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 G
 
 ### 4.7 WebUI 样式踩坑
 - **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
+- **顶部锁定导航条（v2.38）**：页首 + 页签同排（`st.columns`）后整条吸顶。两个关键坑：① **不能用 `:first-child` 定位吸顶行**——CSS 注入的 `st.markdown` 才是主 vertical block 的第一个元素，必须用 `:has(.topbar-title)` 精确定位页首行；② **吸顶条留白不能用元素 margin**——sticky 元素的 margin 区域透明，下层内容滚动时会从 margin 处透出，留白一律用 padding，并把行内 markdown/导航控件的 margin 压为 0。
 
 ### 4.8 工程组织与部署
 
@@ -655,6 +656,7 @@ MEMORY_CONFIG = {
 | v2.35 | 2026-08-04 | **全文一致性 Review 清理（run.sh / step2 / 文档）**: ① `run.sh` banner 模型组合 0.6B→**1.7B**、收件箱提示"选 1/2 处理"改为"看板手动触发"、声纹录入提示"声纹库 1 号仅一条"改为"is_owner 标记，仅一条"（对齐 PRD FR-003-VID）；② `step2_download_models.sh` 下载模型 0.6B→**1.7B**（`Qwen/Qwen3-ASR-1.7B-hf`，~4.1GB）、末段"录入本人声纹（1 号必须）"改为"标注学习为主流程、CLI 录入可选补充"（§4.8）；③ 修复 §3.2 [diarization.py] `file:///` 链接缺 `asr-local/` 段；④ §4.1"无有效语音段移入 error/"更正为"不移文件、仅生成 .error.txt"（与 §3.6/PRD FR-001-AR 一致）；⑤ §5.3 配置名补 `_SECONDS`（`TIME_SOURCE_MISMATCH_THRESHOLD_SECONDS`）对齐 settings.py；⑥ PRD §6.1/§9/§11.3 模型下载表述修正（hf-mirror 实测不可用 → huggingface-cli + 代理/ModelScope 兜底，v2.31 经验） |
 | v2.36 | 2026-08-04 | **失败文件处理恢复"移入 error/"（archive.py / process_inbox.py）**: ① `move_to_error()`（src/archive.py §3.6）——处理失败时把**原始音频文件移入 error/ 目录**（保留原名，重名时附加产生错误时间戳与序号），`.error.txt` 仍带时间戳防重名（v2.9 曾改为"仅写日志不移文件"，v2.36 恢复移入，收件箱只保留待处理文件；用户可手动移回重试）；② `archive_error_files()`——归档范围由仅 `.error.txt` 扩展为 **`.error.txt` 日志 + 失败音频**一并移入 `error/archived/`（命名附原文件创建时间戳防重名）；③ `process_inbox.py` 新增 `_move_failed_group()`（§3.6）——失败分支把仍留在收件箱的主文件 + 同 stem 兄弟文件一并移入 error/，避免下次扫描把次优格式兄弟文件当主格式处理（FR-001-MULTI）；④ §4.1 无有效语音段处理同步（移入 error/ + 日志）；⑤ pipeline 各失败分支（重复文件/加载/VAD/Diarization/ASR/无有效语音段）经 `move_to_error` 统一生效 |
 | v2.37 | 2026-08-04 | **settings.py 入 git 口径修正（v2.33 设计例外的口径修正）**: ① settings.py **纳入 git 版本管理**——以 **ThinkPad 生产版本为基准**上传（`MODELS_DIR` 默认值统一为 `PROJ_ROOT / "model_cache"`，MacBook 本地已替换为生产版本，两端文件完全一致；原"本地 models / 生产 model_cache"差异消除，MacBook 无模型权重/无 .env，统一无副作用）；② 设计例外口径修正为"**不随 `deploy_webui.sh` 部署**（设计约定：部署覆盖会冲掉 ThinkPad 上手工调整的配置，运行时由 `.env` 覆盖）而非'不入 git'"——撤销上一轮的 `git rm --cached` 与 `.gitignore` 排除，恢复跟踪（§4.8）；③ `deploy_webui.sh` 注释同步；④ 此后修改 settings.py：手动 `scp` 同步到 ThinkPad + 提交 git（两端内容相同，无需 sed 恢复默认值） |
+| v2.38 | 2026-08-04 | **顶部锁定导航条（webui.py §4.7 / PRD §8.2）**: ① 页首（标题 + 北京时间）与页签导航**合并为同一行**——`st.columns([1.2, 1.8])` 左品牌右导航，品牌块 = 暖赭方块 + 标题 + 时间小字副标（原 `.page-header`/`.page-title`/`.page-time` 样式移除，改为 `.topbar-*`）；② 整条 `position: sticky; top: 0` 吸顶（页底色 + 底部分隔线 + 轻阴影），滚动时导航始终可见；③ **两个关键坑**：吸顶行用 `:has(.topbar-title)` 定位（`:first-child` 会命中 CSS 注入的 st.markdown）；吸顶条留白用 padding 不用 margin（sticky 元素 margin 透明、下层内容透出）；④ 分段控件 label min-width 9em→8.5em 适配同排布局；⑤ 文档头部版本号 + PRD §8.2 设计要点/线框图 + 变更日志同步 |
 
 ---
 

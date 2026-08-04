@@ -4,6 +4,7 @@ Streamlit Web Dashboard — PRD FR-008
 
 UI v2.0 — KVI 视觉风格重构：
 - 导航：st.segmented_control 分段控件，每个页签是独立区块，不再依赖脆弱的 CSS 覆盖
+- 顶部锁定导航条（v2.38）：页首（标题+时间）与页签同排，整条吸顶，滚动时始终可见
 - 布局：st.container(border=True) 面板，面板头部 = 标题 + 分隔线，区块边界明确
 - 排版：代码块行高锁定 1.5；搜索/文件浏览上下堆叠；文本预览限高滚动
 - 色彩：灰阶为基（85%），暖赭 #b86a48 作唯一强调色（5%）
@@ -53,7 +54,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-04-23:23:23"
+UI_VERSION = "2026-08-04-23:49:18"
 
 st.set_page_config(page_title="ASR 本地转录系统", page_icon="🎙️", layout="wide")
 
@@ -124,29 +125,51 @@ div[data-testid="stAlert"] {
 }
 div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
 
-/* ── 页首标题 ── */
-.page-title {
-    font-size: 1.75rem; font-weight: 700; color: var(--fg-0);
+/* ── 顶部锁定导航条（v2.38）：页首 + 导航同排，整条吸顶 ──
+   结构：第一行 st.columns = [品牌标题块 | 分段导航]。
+   关键：sticky 元素的 margin 区域是透明的，下层内容滚动时会从 margin 处透出，
+   所以吸顶条的留白一律用 padding；标题/导航自身的 margin 在此置 0。 */
+.topbar-title {
+    display: flex; flex-direction: column; gap: 3px;
+}
+.topbar-brand {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: 1.45rem; font-weight: 700; color: var(--fg-0);
     letter-spacing: -0.01em; line-height: 1.2;
 }
 .title-dot {
     display: inline-block; width: 10px; height: 10px;
-    background: var(--accent); border-radius: 2px; margin-right: 10px;
+    background: var(--accent); border-radius: 2px;
 }
-.page-time {
-    font-size: 0.85rem; color: var(--fg-3); font-weight: 400;
-    margin-left: 14px; vertical-align: 0.1em;
+.topbar-time {
+    font-size: 0.82rem; color: var(--fg-3); font-weight: 400;
 }
-/* 页首标题块与下方导航拉开（Streamlit 元素间距压缩到 0） */
-.page-header { margin: 0; }
-div[data-testid="stMarkdownContainer"]:has(.page-header) {
-    margin-bottom: 28px;
+
+/* 吸顶条：用 :has(.topbar-title) 定位"页首+导航"所在的行容器
+   （不能用 :first-child——CSS 注入的 st.markdown 才是页面第一个元素） */
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) {
+    position: sticky; top: 0; z-index: 100;
+    background: var(--bg-page);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 2px 8px rgba(31, 27, 23, 0.05);
+    padding: 0.8rem 0 0.9rem 0;
+}
+/* 行内垂直居中：导航与品牌块对齐 */
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) [data-testid="stHorizontalBlock"] {
+    align-items: center;
+}
+/* 吸顶条内部：标题 markdown 与导航控件 margin 压掉（防透底） */
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) div[data-testid="stMarkdownContainer"] {
+    margin-bottom: 0 !important;
+}
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) div[data-testid="stSegmentedControl"],
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.topbar-title) div[data-testid="stRadio"] {
+    margin: 0;
 }
 
 /* ── 分段导航 ── */
-div[data-testid="stSegmentedControl"] { margin: 0.4rem 0 1.6rem 0; }
 div[data-testid="stSegmentedControl"] label {
-    min-width: 9em;
+    min-width: 8.5em;
 }
 
 /* ── 面板（border 容器） ──
@@ -1029,23 +1052,29 @@ def render_segment_audio(row: dict):
 
 # ========== 页面 ==========
 
-st.markdown(
-    f"<div class='page-header'><span class='page-title'><span class='title-dot'></span>ASR 本地转录系统</span>"
-    f"<span class='page-time'>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 北京时间</span></div>",
-    unsafe_allow_html=True,
-)
-
 NAV_OPTIONS = ["概览 · 状态", "处理记录", "声纹库 · 数据库", "搜索 · 文件"]
-if hasattr(st, "segmented_control"):
-    page = st.segmented_control(
-        "导航", NAV_OPTIONS,
-        default=NAV_OPTIONS[0], label_visibility="collapsed", key="nav",
+
+# ── 顶部锁定导航条：页首（标题+时间）与导航同排，整条吸顶（CSS） ──
+col_brand, col_nav = st.columns([1.2, 1.8], gap="medium")
+with col_brand:
+    st.markdown(
+        f"<div class='topbar-title'>"
+        f"<span class='topbar-brand'><span class='title-dot'></span>ASR 本地转录系统</span>"
+        f"<span class='topbar-time'>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 北京时间</span>"
+        f"</div>",
+        unsafe_allow_html=True,
     )
-else:
-    page = st.radio(
-        "导航", NAV_OPTIONS,
-        horizontal=True, label_visibility="collapsed", key="nav",
-    )
+with col_nav:
+    if hasattr(st, "segmented_control"):
+        page = st.segmented_control(
+            "导航", NAV_OPTIONS,
+            default=NAV_OPTIONS[0], label_visibility="collapsed", key="nav",
+        )
+    else:
+        page = st.radio(
+            "导航", NAV_OPTIONS,
+            horizontal=True, label_visibility="collapsed", key="nav",
+        )
 if page is None:
     page = NAV_OPTIONS[0]
 
