@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.46  
+**版本**: v2.47  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -524,6 +524,8 @@ def move_to_error(src: Path, reason: str = "") -> None:
       └── models--pyannote--embedding/                        # 声纹匹配（voiceprint.py）
   ```
   **坑（v2.46）**：3.1 管线离线加载依赖 `speaker-diarization-community-1`（PLDA），曾因"看名字像没用"误删导致离线加载失败（`OfflineModeIsEnabled` 拉取 `plda/xvec_transform.npz`），已恢复。**核对/删除模型目录必须以实际离线加载（`HF_HUB_OFFLINE=1` 跑 pipeline）为准，不能只凭目录名判断**。step2 旧版下载的松散目录（`pyannote-speaker-diarization-3.1` 等）运行时并不读取（PyAnnote 4.x 走 hub 缓存），纯冗余。
+- **ThinkPad 代理（open_proxy，v2.47 记录用法）**：`~/.bashrc` 定义 `open_proxy` / `close_proxy` / `restart_proxy` / `check_proxy`，基于 `~/Applications/clash-for-linux/`（clash 内核，监听 `127.0.0.1:7890`）。开启：`source ~/.bashrc && open_proxy`（内部 `sudo bash start.sh` 启动 clash，随后 `source /etc/profile.d/clash.sh` 并 `proxy_on` 导出 `http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:7890`、`no_proxy=127.0.0.1,localhost`）；关闭 `close_proxy`；状态 `check_proxy`（netstat 7890 + env 检查）。**脚本化/无 sudo 场景**：代理未开时仍用 `HF_ENDPOINT=https://hf-mirror.com` 或 MacBook 中转；代理已开的 shell 里设 `HTTPS_PROXY=http://127.0.0.1:7890` 即可让 HF 下载走代理。
+- **默认路径残留目录防护（v2.47）**：`db.py::connect()` 增加告警——未设 `ASR_ARCHIVE` 且目标为默认 `~/audio_archive/transcripts.db` 时向 stderr 打印提示（v2.21 问题的复发防护）。曾出现 `/home/kevin/audio_archive`（0 字节空库，2026-08-04 21:07）残留，正确路径 `/home/kevin/asr_sys_local/audio_archive` 不受影响；已清理并确认无其他默认路径残留。
 
 ### 4.7 WebUI 样式踩坑
 - **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
@@ -680,6 +682,7 @@ MEMORY_CONFIG = {
 | v2.44 | 2026-08-05 | **不标注操作区布局 + 全文一致性 Review（webui.py / db.py / voiceprint.py / PRD）**: ① **布局**——「🚫 不标注」tab 改为两组 `st.columns([3, 1], vertical_alignment="center")`：「设为不标注」「恢复标注」按钮分别与各自多选框**同行垂直居中对齐**，`use_container_width=True` 铺满窄列；② **一致性修正**——PRD §7.1 `sample_count DEFAULT 0`→**1**（对齐 `db.py` SCHEMA_SQL 实际默认值）；PRD §4.2 FR-009 回填表述修正（标注已实现回填、合并/删除规划中不回填，消除与 FR-003-CLUSTER 的矛盾）；`voiceprint.py::register_new_cluster` 新建簇字典补 `skip_label: 0`（与 `load_all_clusters` 返回形状一致，匹配层不消费该字段）；③ 通篇审查——版本号、变更日志、锚点、界面描述、SQL、脚本模型名（1.7B）均一致；④ 部署验证：18 个运行时文件 md5 全量一致 + 无头 Chrome 实测按钮与多选框同行对齐 |
 | v2.45 | 2026-08-05 | **不标注操作区对齐修正（webui.py §1.7）**: ① **问题**——v2.44 的 `vertical_alignment="center"` 使按钮对齐到「label 文字 + 下拉框」整体的垂直中间：实测 label 24px + 间隙 4px + 框 40px，按钮中心落在 label 与框之间（既不对齐文字也不对齐框）；② **修正**——无头 Chrome 实测按钮与下拉框**等高（均 40px）**，改用 `vertical_alignment="bottom"`：按钮底边对齐列底边（= 下拉框底边），顶部随之精确对齐下拉框；label 保持可见位于框上方、不参与按钮定位；③ 部署验证：按钮 top == 下拉框 top（941px）、left 位于框右侧，四端 md5 一致 |
 | v2.46 | 2026-08-05 | **模型目录清理 + step2 下载口径重写（§4.6 / PRD §5.3、§6.1、§9、§11.3）**: ① **ThinkPad 模型目录清理**——删除 9 项冗余（step2 旧版松散目录 pyannote-speaker-diarization-3.1/pyannote-segmentation-3.0/pyannote-embedding、顶层旧 hub 缓存 models--pyannote--segmentation-3.0/wespeaker/community-1 残缺、silero-vad-ms、xet、hub 内 community-1）约 178M；② **PLDA 依赖事故与恢复**——删除 hub 内 community-1 后离线加载管线失败（`get_plda` 需 `pyannote/speaker-diarization-community-1/plda/xvec_transform.npz`），经 MacBook + `HF_ENDPOINT=https://hf-mirror.com` 的 `snapshot_download` 下载 33M 并用 tar 原样传回（保留 refs/snapshots 符号链接）恢复；离线加载验证通过（pipeline 3.1 / embedding / Silero VAD 全 OK）；③ **step2_download_models.sh 重写**——废弃 `huggingface-cli` 改 Python `snapshot_download`；pyannote 全部入 hub 缓存（speaker-diarization-3.1 / segmentation-3.0 / wespeaker / community-1 / embedding）；Qwen 保持自定义目录；Silero 预热固定 `torch.hub.set_dir(models/silero-vad)`（修掉旧版 TORCH_HOME 与 vad.py 目录不一致的隐患）；环境变量与 .env/settings.py 唯一口径（HF_HOME=models、HF_HUB_CACHE=models/hub）；④ 网络结论更新——hf-mirror 实测可用（HF_ENDPOINT），覆盖 v2.31/v2.35 旧结论；⑤ 部署验证：step2 同步 ThinkPad + 19 文件 md5 一致 + 离线加载实测通过 |
+| v2.47 | 2026-08-05 | **open_proxy 用法记录 + 残留目录清理与防护（§4.6 / db.py）**: ① **open_proxy 机制记录**——`~/.bashrc` 函数（open/close/restart/check_proxy），clash 内核 `~/Applications/clash-for-linux/`，端口 7890，`proxy_on` 导出 http(s)_proxy；脚本化无 sudo 场景继续用 hf-mirror/MacBook 中转；② **清理错误路径残留**——`/home/kevin/audio_archive`（settings 默认路径 + 未加载 .env 时 connect 制造，含 0 字节 transcripts.db）已删除，确认无其他默认路径残留（`~/audio_inbox`/`~/asr-local` 等均不存在），正确路径 `asr_sys_local/audio_archive` 不受影响；③ **复发防护**——`db.py::connect()` 在"无显式 db_path + 默认 `~/audio_archive` + 未设 ASR_ARCHIVE"时向 stderr 告警，替代静默制造残留；④ 部署验证：db.py 同步 ThinkPad + 19 文件 md5 一致 |
 
 ---
 

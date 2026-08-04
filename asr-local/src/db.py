@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import os
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -136,6 +138,16 @@ def ensure_parent_dir(path: Path) -> None:
 @contextmanager
 def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     p = Path(db_path or DB_PATH)
+    # v2.47 防护：未加载 .env 时 settings 走默认路径（HOME/audio_archive 等），
+    # connect/init_db 会在 HOME 下制造残留目录（v2.21 问题复发：曾出现
+    # /home/kevin/audio_archive 0 字节空库）。仅在"无显式 db_path + 默认路径 +
+    # 未设置 ASR_ARCHIVE"时向 stderr 告警，帮助定位而非静默制造残留。
+    if db_path is None and not os.environ.get("ASR_ARCHIVE") \
+            and p.parent == Path.home() / "audio_archive":
+        print(
+            f"[db] 警告：未检测到 ASR_ARCHIVE，正在使用默认路径 {p} —— "
+            "请先 source .env（run.sh / systemd 已自动加载），否则会制造 "
+            "~/audio_archive 残留目录", file=sys.stderr)
     ensure_parent_dir(p)
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
