@@ -4,7 +4,7 @@ Streamlit Web Dashboard — PRD FR-008
 
 UI v2.0 — KVI 视觉风格重构：
 - 导航：st.segmented_control 分段控件，每个页签是独立区块，不再依赖脆弱的 CSS 覆盖
-- 顶部锁定导航条（v2.38 实现 / v2.39 修复生效）：页首（标题+时间）与页签同排，整条吸顶，滚动时始终可见
+- 顶部锁定导航条（v2.40 定稿）：页首（Local ASR System + 北京时间）与页签同排，整条吸顶，滚动时始终可见
 - 布局：st.container(border=True) 面板，面板头部 = 标题 + 分隔线，区块边界明确
 - 排版：代码块行高锁定 1.5；搜索/文件浏览上下堆叠；文本预览限高滚动
 - 色彩：灰阶为基（85%），暖赭 #b86a48 作唯一强调色（5%）
@@ -54,9 +54,9 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-05-00:04:54"
+UI_VERSION = "2026-08-05-00:26:40"
 
-st.set_page_config(page_title="ASR 本地转录系统", page_icon="🎙️", layout="wide")
+st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 
 # ── KVI 风格系统 ──────────────────────────────────────────────
 st.markdown("""
@@ -125,21 +125,17 @@ div[data-testid="stAlert"] {
 }
 div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
 
-/* ── 顶部锁定导航条（v2.38）：页首 + 导航同排，整条吸顶 ──
+/* ── 顶部锁定导航条（v2.38 实现 / v2.40 品牌改版）：页首 + 导航同排，整条吸顶 ──
    结构：第一行 st.columns = [品牌标题块 | 分段导航]。
    关键：sticky 元素的 margin 区域是透明的，下层内容滚动时会从 margin 处透出，
    所以吸顶条的留白一律用 padding；标题/导航自身的 margin 在此置 0。 */
 .topbar-title {
     display: flex; flex-direction: column; gap: 3px;
+    padding-left: 0.5rem;   /* 品牌块整体右移，避免贴着左边界（v2.40） */
 }
 .topbar-brand {
-    display: inline-flex; align-items: center; gap: 10px;
     font-size: 1.45rem; font-weight: 700; color: var(--fg-0);
     letter-spacing: -0.01em; line-height: 1.2;
-}
-.title-dot {
-    display: inline-block; width: 10px; height: 10px;
-    background: var(--accent); border-radius: 2px;
 }
 .topbar-time {
     font-size: 0.82rem; color: var(--fg-3); font-weight: 400;
@@ -173,8 +169,7 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
 }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"],
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"] * {
-    background: var(--accent-soft) !important;
-    border-color: var(--accent) !important;
+    background: transparent !important;   /* 选中态只保留加粗红色文字，不加背景（v2.40） */
     color: var(--accent) !important;
     font-weight: 600;
 }
@@ -1069,7 +1064,7 @@ col_brand, col_nav = st.columns([1.2, 1.8], gap="medium")
 with col_brand:
     st.markdown(
         f"<div class='topbar-title'>"
-        f"<span class='topbar-brand'><span class='title-dot'></span>ASR 本地转录系统</span>"
+        f"<span class='topbar-brand'>Local ASR System</span>"
         f"<span class='topbar-time'>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 北京时间</span>"
         f"</div>",
         unsafe_allow_html=True,

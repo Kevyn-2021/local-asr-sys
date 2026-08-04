@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.39  
+**版本**: v2.40  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -658,6 +658,7 @@ MEMORY_CONFIG = {
 | v2.37 | 2026-08-04 | **settings.py 入 git 口径修正（v2.33 设计例外的口径修正）**: ① settings.py **纳入 git 版本管理**——以 **ThinkPad 生产版本为基准**上传（`MODELS_DIR` 默认值统一为 `PROJ_ROOT / "model_cache"`，MacBook 本地已替换为生产版本，两端文件完全一致；原"本地 models / 生产 model_cache"差异消除，MacBook 无模型权重/无 .env，统一无副作用）；② 设计例外口径修正为"**不随 `deploy_webui.sh` 部署**（设计约定：部署覆盖会冲掉 ThinkPad 上手工调整的配置，运行时由 `.env` 覆盖）而非'不入 git'"——撤销上一轮的 `git rm --cached` 与 `.gitignore` 排除，恢复跟踪（§4.8）；③ `deploy_webui.sh` 注释同步；④ 此后修改 settings.py：手动 `scp` 同步到 ThinkPad + 提交 git（两端内容相同，无需 sed 恢复默认值） |
 | v2.38 | 2026-08-04 | **顶部锁定导航条（webui.py §4.7 / PRD §8.2）**: ① 页首（标题 + 北京时间）与页签导航**合并为同一行**——`st.columns([1.2, 1.8])` 左品牌右导航，品牌块 = 暖赭方块 + 标题 + 时间小字副标（原 `.page-header`/`.page-title`/`.page-time` 样式移除，改为 `.topbar-*`）；② 整条 `position: sticky; top: 0` 吸顶（页底色 + 底部分隔线 + 轻阴影），滚动时导航始终可见；③ **两个关键坑**：吸顶行用 `:has(.topbar-title)` 定位（`:first-child` 会命中 CSS 注入的 st.markdown）；吸顶条留白用 padding 不用 margin（sticky 元素 margin 透明、下层内容透出）；④ 分段控件 label min-width 9em→8.5em 适配同排布局；⑤ 文档头部版本号 + PRD §8.2 设计要点/线框图 + 变更日志同步 |
 | v2.39 | 2026-08-04 | **顶部锁定导航条修复（webui.py §4.7 / PRD §8.2）**: ① **吸顶选择器修正**——Streamlit 1.60 实测 `st.columns` 顶层容器为 **`stLayoutWrapper`**（`stElementContainer` 只是列内元素包装），v2.38 用 `stElementContainer` 导致吸顶/底边框/留白全部未生效（无头 Chrome 实测 DOM + 注入 sticky 验证）；② **页签与下方面板间距加大**——吸顶条 `padding-bottom` 0.9rem→**1.15rem**，四个 tab 间距一致；③ **分段控件适配 1.60 新渲染**——`stSegmentedControl label` 结构不存在，改为 `div[role="radiogroup"] button`（`aria-checked="true"` 选中态恢复 KVI 暖赭高亮 + min-width 8.5em），老版本 label 规则保留兜底；④ 部署验证：无头 Chrome 滚动后 topbarTop=0、`cssHit=1` |
+| v2.40 | 2026-08-05 | **顶部品牌改版 + 页签选中态去背景（webui.py §4.7 / PRD §8.2）**: ① 品牌名 `ASR 本地转录系统` → **`Local ASR System`**，删除 `.title-dot` 暖赭小方块（HTML span + CSS 一并移除），`st.set_page_config(page_title=...)` 同步改英文；② 品牌块右移——`.topbar-title` 增加 `padding-left: 0.5rem`（标题与北京时间整体右移，不贴左边界）；③ 页签选中态去背景——`button[aria-checked="true"]` 的 `background` 改 `transparent !important`（移除 `--accent-soft` 背景与 accent 边框色），保留加粗暖赭文字（`color: var(--accent); font-weight: 600`）；④ 部署验证：无头 Chrome 实测选中按钮 `backgroundColor=rgba(0,0,0,0)`、品牌文本为 Local ASR System、吸顶回归正常 |
 
 ---
 
