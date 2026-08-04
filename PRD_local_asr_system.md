@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v2.45  
+**版本**: v2.46  
 **日期**: 2026-08-04  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -484,7 +484,7 @@
 | 触发方式 | 手动触发（process_inbox.py） | Web 看板按钮触发，递归扫描收件箱含子文件夹 |
 | 跨设备访问 | Tailscale (WireGuard) | 端到端加密组网，无云端副本 |
 | 时间处理 | `python-dateutil` + `zoneinfo` | 时区、ISO 8601 解析 |
-| 模型下载 | HuggingFace Hub（`step2_download_models.sh` 用 huggingface-cli 拉取）；直连卡死时经代理（open_proxy）或改用 ModelScope 兜底 | 解决国内网络访问问题 |
+| 模型下载 | HuggingFace Hub（`step2_download_models.sh` 用 Python snapshot_download 拉取到与运行时一致的目录）；直连卡死时经代理或 `HF_ENDPOINT=https://hf-mirror.com` 兜底（v2.46 实测可用） | 解决国内网络访问问题 |
 
 
 
@@ -927,7 +927,7 @@ $ bash run.sh
 
 | 风险 | 概率 | 影响 | 缓解措施 |
 |------|------|------|---------|
-| 模型首次下载失败 | 中 | 高 | 手动下载脚本 `step2_download_models.sh`；HF 直连卡死时经代理（open_proxy）或改用 ModelScope 下载（v2.31 实测 hf-mirror 不可用） |
+| 模型首次下载失败 | 中 | 高 | 手动下载脚本 `step2_download_models.sh`（Python snapshot_download，目录与运行时一致）；HF 直连卡死时经代理或 `HF_ENDPOINT=https://hf-mirror.com`（v2.46 实测可用，覆盖 v2.31 "hf-mirror 不可用"的旧结论） |
 | 内存不足 (OOM) | 中 | 高 | 1.7B FP32 峰值 11.8GB（< 12GB 红线），分阶段串行加载/卸载；内存紧张可回退 bf16（5.2GB/3.14× 实时，见 TDD §3.4） |
 | PyAnnote Token 过期 | 低 | 中 | 文档明确说明申请流程 |
 | 长音频处理超时 | 中 | 中 | 支持分段处理 + 断点续传 |
@@ -971,6 +971,8 @@ $ bash run.sh
 - Qwen3-ASR: https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf
 - PyAnnote Diarization: https://huggingface.co/pyannote/speaker-diarization-3.1
 - PyAnnote Segmentation: https://huggingface.co/pyannote/segmentation-3.0
+- PyAnnote Wespeaker（3.1 默认声纹嵌入）: https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM
+- PyAnnote Community（3.1 的 PLDA 打分依赖，v2.46 记录）: https://huggingface.co/pyannote/speaker-diarization-community-1
 - PyAnnote Embedding: https://huggingface.co/pyannote/embedding
 - ModelScope（模型镜像下载，v2.31 实测可用）: https://modelscope.cn
 - Tailscale: https://tailscale.com
@@ -1040,6 +1042,7 @@ $ bash run.sh
 | v2.43 | 2026-08-05 | **声纹簇「不标注」（FR-003-CLUSTER）**：① `speaker_clusters` 新增 `skip_label` 列（0/1，老库自动迁移）；② Web「声纹簇·标注学习」面板新增**第三个操作区「不标注」**——陌生人设为不标注后**保持原编号** `unknown_XXXX`，从「标注为某人」列表隐藏，**照常参与声纹匹配与学习**；③ 支持批量设为不标注 / 恢复标注，总览表格标注列显示"🚫 不标注"；④ 不标注不触发任何回填（编号未变）；工程细节见 [TDD v2.43](./TDD_local_asr_system.md#6-变更日志) |
 | v2.44 | 2026-08-05 | **不标注操作区布局 + 全文一致性 Review（FR-003-CLUSTER / 文档）**：① 「不标注」tab 布局调整——「设为不标注」「恢复标注」按钮分别与各自多选框**同行垂直居中对齐**（列比 3:1 + `use_container_width`）；② 一致性修正——§7.1 `speaker_clusters.sample_count` 默认值 0→**1**（对齐代码 `db.py`）；§4.2 FR-009 标注/合并回填表述修正（**标注已实现同步回填**，合并/删除仍规划中且不回填）；③ 通篇审查：PRD/TDD/代码无其他不一致；工程细节见 [TDD v2.44](./TDD_local_asr_system.md#6-变更日志) |
 | v2.45 | 2026-08-05 | **不标注操作区对齐修正（FR-003-CLUSTER）**：v2.44 的 `vertical_alignment="center"` 把按钮对齐到了「文字+下拉框」整体的中间（既没对齐文字也没对齐框）；实测按钮与下拉框**等高 40px**，改为 `vertical_alignment="bottom"` 后按钮与下拉框本身精确对齐（label 在框上方不参与定位）；工程细节见 [TDD v2.45](./TDD_local_asr_system.md#6-变更日志) |
+| v2.46 | 2026-08-05 | **模型目录清理 + step2 下载口径重写（§5.3/§6.1/§9/§11.3）**：① 清理 ThinkPad 冗余模型约 145M（step2 旧版松散目录 ×3、顶层旧 hub 缓存重复 ×2、community-1 顶层残缺、silero-vad-ms、xet）；② **发现并记录 3.1 管线的 PLDA 依赖 `pyannote/speaker-diarization-community-1`**（误删后离线加载失败、已恢复，删除模型必须以实际离线加载验证为准）；③ step2 重写——废弃的 huggingface-cli 改为 Python `snapshot_download`，pyannote 全部入 hub 缓存（含 wespeaker 与 community-1），Silero 固定到 vad.py 实际目录，目录与运行时逐一对齐；④ 网络兜底结论更新——hf-mirror 实测可用（`HF_ENDPOINT`），覆盖 v2.31"不可用"旧结论；工程细节见 [TDD v2.46](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 

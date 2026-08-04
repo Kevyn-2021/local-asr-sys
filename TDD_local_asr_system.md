@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.45  
+**版本**: v2.46  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -508,8 +508,22 @@ def move_to_error(src: Path, reason: str = "") -> None:
 - **`upsert_person()` 覆盖语义（v2.19）**：`ON CONFLICT DO UPDATE` 会把**未传字段**覆盖为 NULL。标注回填若只传姓名，会清空已填的性别/出生年/关系/备注。必须先 `get_person()` 判断存在性，仅新建时才调用。详见 §1.6。
 - **`next_unknown_label()` 取全表 MAX（v2.19）**：不能基于"最后插入行"（`ORDER BY cluster_id DESC LIMIT 1`）——删除过编号较大的簇后，最后插入行的编号可能已被占用，INSERT 时 UNIQUE 冲突。改为扫描全部行取最大编号 +1。
 
-### 4.6 代理配置
-ThinkPad 代理：`open_proxy`（clash，`127.0.0.1:7890`），可用于连接 GitHub 下载模型/依赖。
+### 4.6 模型下载与代理配置
+- **网络现实（v2.46 实测）**：ThinkPad / MacBook 直连 huggingface.co 均不通（无代理时 `ConnectError`/超时）；**hf-mirror.com 可用**——`HF_ENDPOINT=https://hf-mirror.com bash step2_download_models.sh`（覆盖 v2.31/v2.35 "hf-mirror 不可用"的旧结论，网络环境变化所致）。曾用 ThinkPad `open_proxy`（clash `127.0.0.1:7890`）经代理下载，当前家网无此代理。
+- **huggingface-cli 已废弃（v2.46）**：新版 huggingface_hub 中 `huggingface-cli` 只打印提示、不再执行下载；step2 已改用 Python `snapshot_download`。
+- **模型目录组织（v2.46 定稿，与运行时逐一对齐——路径配合，缺一不可）**：
+  ```
+  models/
+  ├── Qwen3-ASR-1.7B-hf/                 # asr.py 自定义目录直接加载（不经过 hub 缓存）
+  ├── silero-vad/snakers4_silero-vad_master/  # vad.py torch.hub.set_dir 本地缓存
+  └── hub/                               # HF hub 缓存（HF_HOME=models ⇒ $HF_HOME/hub）
+      ├── models--pyannote--speaker-diarization-3.1/          # 管线配置 + handler
+      ├── models--pyannote--segmentation-3.0/                 # 分段模型
+      ├── models--pyannote--wespeaker-voxceleb-resnet34-LM/   # 3.1 默认声纹嵌入（config.yaml 引用）
+      ├── models--pyannote--speaker-diarization-community-1/  # 3.1 的 PLDA 打分依赖（plda/xvec_transform.npz 等）
+      └── models--pyannote--embedding/                        # 声纹匹配（voiceprint.py）
+  ```
+  **坑（v2.46）**：3.1 管线离线加载依赖 `speaker-diarization-community-1`（PLDA），曾因"看名字像没用"误删导致离线加载失败（`OfflineModeIsEnabled` 拉取 `plda/xvec_transform.npz`），已恢复。**核对/删除模型目录必须以实际离线加载（`HF_HUB_OFFLINE=1` 跑 pipeline）为准，不能只凭目录名判断**。step2 旧版下载的松散目录（`pyannote-speaker-diarization-3.1` 等）运行时并不读取（PyAnnote 4.x 走 hub 缓存），纯冗余。
 
 ### 4.7 WebUI 样式踩坑
 - **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
@@ -665,6 +679,7 @@ MEMORY_CONFIG = {
 | v2.43 | 2026-08-05 | **声纹簇「不标注」（db.py §1.7 / webui.py / PRD FR-003-CLUSTER）**: ① **数据层**——`speaker_clusters` 新增 `skip_label INTEGER DEFAULT 0`（SCHEMA_SQL + `init_db()` 内 PRAGMA 检查 + `ALTER TABLE` 老库迁移），新增 `set_cluster_skip(cluster_id, skip)`（不写 assigned_name/label/embedding，不触发回填），`load_all_clusters()`/`list_clusters_view()` 查询补 `skip_label`；② **UI**——「声纹簇·标注学习」新增第三个 tab「🚫 不标注」：两个多选框（设为不标注 / 恢复标注）+ 按钮批量执行，总览表格标注列显示"🚫 不标注"；「标注为某人」列表按 `NOT assigned_name AND NOT skip_label` 过滤；③ **语义**——不标注簇保持原编号、照常参与匹配学习（匹配层不过滤），恢复标注即回到标注列表，全程可逆；④ **启动迁移**——webui.py 顶部调用 `init_db()`（幂等），老库重启即补列；⑤ 部署验证：服务 active + `PRAGMA table_info` 确认 `skip_label` 存在 + 无头 Chrome 渲染新 tab |
 | v2.44 | 2026-08-05 | **不标注操作区布局 + 全文一致性 Review（webui.py / db.py / voiceprint.py / PRD）**: ① **布局**——「🚫 不标注」tab 改为两组 `st.columns([3, 1], vertical_alignment="center")`：「设为不标注」「恢复标注」按钮分别与各自多选框**同行垂直居中对齐**，`use_container_width=True` 铺满窄列；② **一致性修正**——PRD §7.1 `sample_count DEFAULT 0`→**1**（对齐 `db.py` SCHEMA_SQL 实际默认值）；PRD §4.2 FR-009 回填表述修正（标注已实现回填、合并/删除规划中不回填，消除与 FR-003-CLUSTER 的矛盾）；`voiceprint.py::register_new_cluster` 新建簇字典补 `skip_label: 0`（与 `load_all_clusters` 返回形状一致，匹配层不消费该字段）；③ 通篇审查——版本号、变更日志、锚点、界面描述、SQL、脚本模型名（1.7B）均一致；④ 部署验证：18 个运行时文件 md5 全量一致 + 无头 Chrome 实测按钮与多选框同行对齐 |
 | v2.45 | 2026-08-05 | **不标注操作区对齐修正（webui.py §1.7）**: ① **问题**——v2.44 的 `vertical_alignment="center"` 使按钮对齐到「label 文字 + 下拉框」整体的垂直中间：实测 label 24px + 间隙 4px + 框 40px，按钮中心落在 label 与框之间（既不对齐文字也不对齐框）；② **修正**——无头 Chrome 实测按钮与下拉框**等高（均 40px）**，改用 `vertical_alignment="bottom"`：按钮底边对齐列底边（= 下拉框底边），顶部随之精确对齐下拉框；label 保持可见位于框上方、不参与按钮定位；③ 部署验证：按钮 top == 下拉框 top（941px）、left 位于框右侧，四端 md5 一致 |
+| v2.46 | 2026-08-05 | **模型目录清理 + step2 下载口径重写（§4.6 / PRD §5.3、§6.1、§9、§11.3）**: ① **ThinkPad 模型目录清理**——删除 9 项冗余（step2 旧版松散目录 pyannote-speaker-diarization-3.1/pyannote-segmentation-3.0/pyannote-embedding、顶层旧 hub 缓存 models--pyannote--segmentation-3.0/wespeaker/community-1 残缺、silero-vad-ms、xet、hub 内 community-1）约 178M；② **PLDA 依赖事故与恢复**——删除 hub 内 community-1 后离线加载管线失败（`get_plda` 需 `pyannote/speaker-diarization-community-1/plda/xvec_transform.npz`），经 MacBook + `HF_ENDPOINT=https://hf-mirror.com` 的 `snapshot_download` 下载 33M 并用 tar 原样传回（保留 refs/snapshots 符号链接）恢复；离线加载验证通过（pipeline 3.1 / embedding / Silero VAD 全 OK）；③ **step2_download_models.sh 重写**——废弃 `huggingface-cli` 改 Python `snapshot_download`；pyannote 全部入 hub 缓存（speaker-diarization-3.1 / segmentation-3.0 / wespeaker / community-1 / embedding）；Qwen 保持自定义目录；Silero 预热固定 `torch.hub.set_dir(models/silero-vad)`（修掉旧版 TORCH_HOME 与 vad.py 目录不一致的隐患）；环境变量与 .env/settings.py 唯一口径（HF_HOME=models、HF_HUB_CACHE=models/hub）；④ 网络结论更新——hf-mirror 实测可用（HF_ENDPOINT），覆盖 v2.31/v2.35 旧结论；⑤ 部署验证：step2 同步 ThinkPad + 19 文件 md5 一致 + 离线加载实测通过 |
 
 ---
 

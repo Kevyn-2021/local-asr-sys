@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
-# 一键模型下载脚本 (PRD 部署 Step 2)
+# 一键模型下载脚本 (PRD 部署 Step 2) —— v2.46 重写
 # 用法: bash scripts/step2_download_models.sh <HF_TOKEN>
-# 说明: 该脚本使用 huggingface-cli 将 Qwen3-ASR + PyAnnote + Silero VAD 的权重
-#       拉取到 $PROJ_ROOT/models/，供离线运行。
-#       在运行脚本之前，请先在 HuggingFace 页面点 "Access repository" 同意条款：
-#         - https://huggingface.co/pyannote/speaker-diarization-3.1
-#         - https://huggingface.co/pyannote/segmentation-3.0
-#         - https://huggingface.co/pyannote/embedding
-#       否则 PyAnnote 组件会下载失败。
+#       或 export HF_TOKEN=xxx; bash scripts/step2_download_models.sh
+# 网络兜底: 直连 huggingface.co 卡死时，用镜像或代理后重跑：
+#       HF_ENDPOINT=https://hf-mirror.com bash scripts/step2_download_models.sh
+#       （v2.46 实测 hf-mirror 可用；也可 export HTTPS_PROXY=... 走代理）
+#
+# 说明: 全部用 Python snapshot_download 下载（huggingface-cli 已废弃、不再工作），
+#       目录布局与运行时逐一对齐（路径配合，缺一不可）：
+#         models/Qwen3-ASR-1.7B-hf/                 ← asr.py 自定义目录直接加载
+#         models/silero-vad/snakers4_silero-vad_master ← vad.py torch.hub 本地缓存
+#         models/hub/models--pyannote--*            ← PyAnnote HF hub 缓存（HF_HOME/hub）
+#   运行时一致性（.env / settings.py / 本脚本同一套）：
+#       HF_HOME=models  ⇒ PyAnnote 缓存根 = models/hub；asr.py 自定义目录 = models/Qwen3-ASR-1.7B-hf；
+#       vad.py torch.hub.set_dir = models/silero-vad
+#
+# 前置: 在 HuggingFace 网页登录并同意以下 gated 模型访问条款：
+#   - https://huggingface.co/pyannote/speaker-diarization-3.1
+#   - https://huggingface.co/pyannote/segmentation-3.0
+#   - https://huggingface.co/pyannote/embedding
+# 否则对应组件下载会失败。
 set -euo pipefail
 
 HF_TOKEN="${1:-${HF_TOKEN:-}}"
@@ -23,88 +35,100 @@ VENV="$PROJ_ROOT/.venv"
 MODELS="$PROJ_ROOT/models"
 mkdir -p "$MODELS"
 
+# 与运行时完全一致的路径（唯一口径，见 settings.py MODELS_DIR = HF_HOME）
 export HF_HOME="$MODELS"
-export HUGGINGFACE_HUB_CACHE="$MODELS/hub"
 export HF_HUB_CACHE="$MODELS/hub"
-export TRANSFORMERS_CACHE="$MODELS/hub"
-export TORCH_HOME="$MODELS/torch_hub"
-mkdir -p "$TRANSFORMERS_CACHE" "$MODELS/torch_hub"
+export HUGGINGFACE_HUB_CACHE="$MODELS/hub"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
+export HF_TOKEN
+export MODELS_DIR="$MODELS"
 
-HUGGINGFACE_CLI="$VENV/bin/huggingface-cli"
 PY="$VENV/bin/python"
 
-if [ ! -x "$HUGGINGFACE_CLI" ]; then
-  echo "✗ huggingface-cli 不在 venv，尝试 pip install..." >&2
-  "$PY" -m pip install -q "huggingface_hub[cli]>=0.24"
-fi
-
-login_ok=false
-if "$HUGGINGFACE_CLI" whoami --token "$HF_TOKEN" >/dev/null 2>&1; then
-  login_ok=true
-else
-  echo "→ 尝试登录 HF..."
-  echo "$HF_TOKEN" | "$HUGGINGFACE_CLI" login --token
-  if "$HUGGINGFACE_CLI" whoami >/dev/null 2>&1; then login_ok=true; fi
-fi
-
-if [ "$login_ok" != "true" ]; then
-  echo "✗ HF Token 无效或无法登录。请检查 token 并确认账号可访问所需模型。" >&2
+if [ ! -x "$PY" ]; then
+  echo "✗ 未找到 venv Python：$PY" >&2
   exit 3
 fi
 
-echo "============================================="
-echo "[1/4] 下载 Qwen3-ASR-1.7B-hf (~4.1GB)"
-echo "============================================="
-"$HUGGINGFACE_CLI" download --repo-type model Qwen/Qwen3-ASR-1.7B-hf --local-dir "$MODELS/Qwen3-ASR-1.7B-hf" --local-dir-use-symlinks False
+# 确保 huggingface_hub 可用（提供 snapshot_download）
+"$PY" -m pip show huggingface_hub >/dev/null 2>&1 \
+  || "$PY" -m pip install -q "huggingface_hub>=0.24"
 
-echo ""
 echo "============================================="
-echo "[2/4] 下载 PyAnnote Diarization 3.1 及其依赖 segmentation-3.0"
+echo "[1/5] 校验 HF Token"
 echo "============================================="
-"$HUGGINGFACE_CLI" download --repo-type model pyannote/speaker-diarization-3.1 --local-dir "$MODELS/pyannote-speaker-diarization-3.1" --local-dir-use-symlinks False || {
-  echo "⚠️  pyannote/speaker-diarization-3.1 下载失败" >&2
-  echo "⚠️  请先在浏览器中打开:" >&2
-  echo "   https://huggingface.co/pyannote/speaker-diarization-3.1" >&2
-  echo "   https://huggingface.co/pyannote/segmentation-3.0" >&2
-  echo "   登录你的 HF 账号，点 'Access repository' 同意条款后重试。" >&2
-  exit 4
-}
-# Diarization 运行时会自动再抓 segmentation-3.0；这里手动也抓一份
-"$HUGGINGFACE_CLI" download --repo-type model pyannote/segmentation-3.0 --local-dir "$MODELS/pyannote-segmentation-3.0" --local-dir-use-symlinks False || true
-
-echo ""
-echo "============================================="
-echo "[3/4] 下载 PyAnnote Embedding (声纹识别)"
-echo "============================================="
-"$HUGGINGFACE_CLI" download --repo-type model pyannote/embedding --local-dir "$MODELS/pyannote-embedding" --local-dir-use-symlinks False || {
-  echo "⚠️  pyannote/embedding 下载失败；请在 HuggingFace 同意该模型的访问条款后重试" >&2
-  exit 5
-}
-
-echo ""
-echo "============================================="
-echo "[4/4] 预热下载 Silero VAD (~1MB，torch.hub)"
-echo "============================================="
-"$PY" - <<PYEOF
+"$PY" - <<'PYEOF'
 import os
-os.environ["HF_HOME"] = os.environ["HF_HOME"] = "$MODELS"
+from huggingface_hub import HfApi
+try:
+    HfApi(token=os.environ["HF_TOKEN"]).whoami()
+    print("✓ HF 登录校验通过")
+except Exception as e:
+    raise SystemExit(f"✗ HF Token 无效或网络不通（可试 HF_ENDPOINT=https://hf-mirror.com）: {e}")
+PYEOF
+
+download_hub() {
+  # 下载到 HF hub 缓存（$HF_HOME/hub/models--<org>--<name>），运行时离线命中同一路径
+  "$PY" - "$1" <<'PYEOF'
+import os, sys
+from huggingface_hub import snapshot_download
+repo = sys.argv[1]
+print(f"[hub] {repo} → {os.environ['HF_HUB_CACHE']}")
+snapshot_download(repo, token=os.environ["HF_TOKEN"])
+print(f"✓ {repo} 已入 hub 缓存")
+PYEOF
+}
+
+echo ""
+echo "============================================="
+echo "[2/5] Qwen3-ASR-1.7B-hf（自定义目录，asr.py 直接加载）"
+echo "============================================="
+"$PY" - <<'PYEOF'
+import os
+from huggingface_hub import snapshot_download
+dest = os.path.join(os.environ["MODELS_DIR"], "Qwen3-ASR-1.7B-hf")
+print(f"[local-dir] Qwen/Qwen3-ASR-1.7B-hf → {dest}")
+snapshot_download("Qwen/Qwen3-ASR-1.7B-hf", local_dir=dest,
+                  token=os.environ["HF_TOKEN"])
+if not os.path.exists(os.path.join(dest, "config.json")):
+    raise SystemExit("✗ Qwen3-ASR-1.7B-hf 下载不完整（缺 config.json）")
+print("✓ Qwen3-ASR-1.7B-hf")
+PYEOF
+
+echo ""
+echo "============================================="
+echo "[3/5] PyAnnote Diarization 3.1 + 依赖（全部入 hub 缓存）"
+echo "============================================="
+download_hub pyannote/speaker-diarization-3.1
+download_hub pyannote/segmentation-3.0
+download_hub pyannote/wespeaker-voxceleb-resnet34-LM   # 3.1 默认声纹嵌入
+download_hub pyannote/speaker-diarization-community-1  # 3.1 的 PLDA 打分依赖（v2.46 记录）
+
+echo ""
+echo "============================================="
+echo "[4/5] PyAnnote Embedding（声纹识别，hub 缓存）"
+echo "============================================="
+download_hub pyannote/embedding
+
+echo ""
+echo "============================================="
+echo "[5/5] Silero VAD（torch.hub 缓存，与 vad.py 目录一致）"
+echo "============================================="
+"$PY" - <<'PYEOF'
+import os
 import torch
-print("torch hub dir:", torch.hub.get_dir())
-m, utils = torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad", onnx=False, trust_repo=True, source="github")
-print("✓ Silero VAD 加载成功")
+hub_dir = os.path.join(os.environ["MODELS_DIR"], "silero-vad")
+torch.hub.set_dir(hub_dir)
+torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad",
+               onnx=False, trust_repo=True, source="github")
+if not os.path.isdir(os.path.join(hub_dir, "snakers4_silero-vad_master")):
+    raise SystemExit("✗ Silero VAD 下载不完整（缺 snakers4_silero-vad_master）")
+print("✓ Silero VAD")
 PYEOF
 
 echo ""
 echo "============================================="
 echo "  全部模型下载完成 ✓"
+echo "  运行时验证：bash run.sh → 选 6 再跑一次（或直接处理音频），"
+echo "  PyAnnote/声纹会以 HF_HUB_OFFLINE=1 命中 models/hub 缓存。"
 echo "============================================="
-du -sh "$MODELS"/* 2>/dev/null
-echo ""
-echo "下一步（可选）：录入某位说话人的声纹"
-echo "  主流程为「标注学习」——处理音频自动抓声纹、Web 看板标注姓名即可，无需专门录入；"
-echo "  如需高质量固定段落样本，可补充录入（is_owner 标记仅一条）:"
-echo "  $PY scripts/enroll_voiceprint.py --name '我' --is-owner /path/to/owner.wav"
-echo ""
-echo "之后：处理单个文件试试 →"
-echo "  $PY scripts/run_pipeline.py ~/audio_inbox/test.wav"
-echo "  → 然后在 Mac/惠普 Tailscale 浏览器打开 http://<ThinkPad-Tailscale-IP>:8501"
