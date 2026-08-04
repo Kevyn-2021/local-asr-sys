@@ -56,7 +56,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-05-01:23:49"
+UI_VERSION = "2026-08-05-01:30:51"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）
@@ -1505,8 +1505,9 @@ elif page == "声纹库 · 数据库":
                 if not all_un:
                     st.info("当前没有未标注编号")
                 else:
-                    # 每组：多选框与按钮同行、垂直居中对齐（v2.44）
-                    row_skip = st.columns([3, 1], vertical_alignment="center")
+                    # 每组：多选框与按钮同行；bottom 对齐使按钮与下拉框本身对齐
+                    # （label 在框上方，不参与按钮定位；按钮与下拉框等高 40px，v2.45）
+                    row_skip = st.columns([3, 1], vertical_alignment="bottom")
                     with row_skip[0]:
                         opt_skip = st.multiselect(
                             "设为不标注（保持原编号）",
@@ -1523,7 +1524,7 @@ elif page == "声纹库 · 数据库":
                                     set_cluster_skip(id_by[o], True)
                                 st.success(f"已将 {len(opt_skip)} 个编号设为不标注（保持原编号）。")
                                 st.rerun()
-                    row_restore = st.columns([3, 1], vertical_alignment="center")
+                    row_restore = st.columns([3, 1], vertical_alignment="bottom")
                     with row_restore[0]:
                         opt_restore = st.multiselect(
                             "恢复标注（回到「标注为某人」）",

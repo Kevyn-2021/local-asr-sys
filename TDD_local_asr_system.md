@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.44  
+**版本**: v2.45  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -664,6 +664,7 @@ MEMORY_CONFIG = {
 | v2.42 | 2026-08-05 | **移除 Qwen3-ASR-0.6B（ThinkPad 模型清理 / settings.py / PRD §6.1、§8.2）**: ① **删除 ThinkPad 本地模型**——`models/Qwen3-ASR-0.6B-hf`（1.5G，`HF_HOME`=models 由 .env 覆盖）+ `~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-0.6B-hf` 残留指针（12K），删除后全盘 `find -iname "*0.6B*"` 无残留，`models/Qwen3-ASR-1.7B-hf`（4.1G）完好；② **settings.py 注释清理**——"v2.31 升级 0.6B → 1.7B"改"v2.31 定稿 1.7B（v2.42 起移除 0.6B）"，并手动 scp 同步到 ThinkPad（settings.py 不随 deploy 部署，v2.37 约定）；③ **PRD 当前状态描述清理**——§6.1 模型条目移除 0.6B 对比、§8.2 技术栈表"优于 0.6B"改为"表现可靠"；④ 变更日志历史条目保留（v1.2/v2.18/v2.31 等为升级过程记录，不篡改历史） |
 | v2.43 | 2026-08-05 | **声纹簇「不标注」（db.py §1.7 / webui.py / PRD FR-003-CLUSTER）**: ① **数据层**——`speaker_clusters` 新增 `skip_label INTEGER DEFAULT 0`（SCHEMA_SQL + `init_db()` 内 PRAGMA 检查 + `ALTER TABLE` 老库迁移），新增 `set_cluster_skip(cluster_id, skip)`（不写 assigned_name/label/embedding，不触发回填），`load_all_clusters()`/`list_clusters_view()` 查询补 `skip_label`；② **UI**——「声纹簇·标注学习」新增第三个 tab「🚫 不标注」：两个多选框（设为不标注 / 恢复标注）+ 按钮批量执行，总览表格标注列显示"🚫 不标注"；「标注为某人」列表按 `NOT assigned_name AND NOT skip_label` 过滤；③ **语义**——不标注簇保持原编号、照常参与匹配学习（匹配层不过滤），恢复标注即回到标注列表，全程可逆；④ **启动迁移**——webui.py 顶部调用 `init_db()`（幂等），老库重启即补列；⑤ 部署验证：服务 active + `PRAGMA table_info` 确认 `skip_label` 存在 + 无头 Chrome 渲染新 tab |
 | v2.44 | 2026-08-05 | **不标注操作区布局 + 全文一致性 Review（webui.py / db.py / voiceprint.py / PRD）**: ① **布局**——「🚫 不标注」tab 改为两组 `st.columns([3, 1], vertical_alignment="center")`：「设为不标注」「恢复标注」按钮分别与各自多选框**同行垂直居中对齐**，`use_container_width=True` 铺满窄列；② **一致性修正**——PRD §7.1 `sample_count DEFAULT 0`→**1**（对齐 `db.py` SCHEMA_SQL 实际默认值）；PRD §4.2 FR-009 回填表述修正（标注已实现回填、合并/删除规划中不回填，消除与 FR-003-CLUSTER 的矛盾）；`voiceprint.py::register_new_cluster` 新建簇字典补 `skip_label: 0`（与 `load_all_clusters` 返回形状一致，匹配层不消费该字段）；③ 通篇审查——版本号、变更日志、锚点、界面描述、SQL、脚本模型名（1.7B）均一致；④ 部署验证：18 个运行时文件 md5 全量一致 + 无头 Chrome 实测按钮与多选框同行对齐 |
+| v2.45 | 2026-08-05 | **不标注操作区对齐修正（webui.py §1.7）**: ① **问题**——v2.44 的 `vertical_alignment="center"` 使按钮对齐到「label 文字 + 下拉框」整体的垂直中间：实测 label 24px + 间隙 4px + 框 40px，按钮中心落在 label 与框之间（既不对齐文字也不对齐框）；② **修正**——无头 Chrome 实测按钮与下拉框**等高（均 40px）**，改用 `vertical_alignment="bottom"`：按钮底边对齐列底边（= 下拉框底边），顶部随之精确对齐下拉框；label 保持可见位于框上方、不参与按钮定位；③ 部署验证：按钮 top == 下拉框 top（941px）、left 位于框右侧，四端 md5 一致 |
 
 ---
 
