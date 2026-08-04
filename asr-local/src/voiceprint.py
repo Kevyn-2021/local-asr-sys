@@ -178,7 +178,7 @@ class VoiceprintEngine:
         from src.db import next_unknown_label, insert_cluster
         label = next_unknown_label()
         cid = insert_cluster(label, embedding.astype(np.float32).tobytes())
-        new_c = {"cluster_id": cid, "label": label, "assigned_name": None,
+        new_c = {"cluster_id": cid, "label": label, "assigned_name": None, "skip_label": 0,
                  "sample_count": 1, "vec": embedding.astype(np.float32)}
         self._clusters.append(new_c)
         return MatchResult(cid, label, None, False)

@@ -56,7 +56,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-05-01:11:22"
+UI_VERSION = "2026-08-05-01:23:49"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）
@@ -1505,37 +1505,41 @@ elif page == "声纹库 · 数据库":
                 if not all_un:
                     st.info("当前没有未标注编号")
                 else:
-                    c_skip, c_restore = st.columns([2, 2])
-                    with c_skip:
+                    # 每组：多选框与按钮同行、垂直居中对齐（v2.44）
+                    row_skip = st.columns([3, 1], vertical_alignment="center")
+                    with row_skip[0]:
                         opt_skip = st.multiselect(
                             "设为不标注（保持原编号）",
                             [f"{c['label']}（未标注）" for c in normal_un],
                             key="skip_sel",
                         )
-                    with c_restore:
+                    with row_skip[1]:
+                        if st.button("🚫 设为不标注", key="btn_skip", use_container_width=True):
+                            if not opt_skip:
+                                st.warning("请先勾选要设为不标注的编号")
+                            else:
+                                id_by = {f"{c['label']}（未标注）": c["cluster_id"] for c in normal_un}
+                                for o in opt_skip:
+                                    set_cluster_skip(id_by[o], True)
+                                st.success(f"已将 {len(opt_skip)} 个编号设为不标注（保持原编号）。")
+                                st.rerun()
+                    row_restore = st.columns([3, 1], vertical_alignment="center")
+                    with row_restore[0]:
                         opt_restore = st.multiselect(
                             "恢复标注（回到「标注为某人」）",
                             [f"{c['label']}（不标注中）" for c in skipped],
                             key="skip_restore_sel",
                         )
-                    if st.button("🚫 设为不标注", key="btn_skip"):
-                        if not opt_skip:
-                            st.warning("请先勾选要设为不标注的编号")
-                        else:
-                            id_by = {f"{c['label']}（未标注）": c["cluster_id"] for c in normal_un}
-                            for o in opt_skip:
-                                set_cluster_skip(id_by[o], True)
-                            st.success(f"已将 {len(opt_skip)} 个编号设为不标注（保持原编号）。")
-                            st.rerun()
-                    if st.button("↩️ 恢复标注", key="btn_skip_restore"):
-                        if not opt_restore:
-                            st.warning("请先勾选要恢复的编号")
-                        else:
-                            id_by2 = {f"{c['label']}（不标注中）": c["cluster_id"] for c in skipped}
-                            for o in opt_restore:
-                                set_cluster_skip(id_by2[o], False)
-                            st.success(f"已恢复 {len(opt_restore)} 个编号的标注。")
-                            st.rerun()
+                    with row_restore[1]:
+                        if st.button("↩️ 恢复标注", key="btn_skip_restore", use_container_width=True):
+                            if not opt_restore:
+                                st.warning("请先勾选要恢复的编号")
+                            else:
+                                id_by2 = {f"{c['label']}（不标注中）": c["cluster_id"] for c in skipped}
+                                for o in opt_restore:
+                                    set_cluster_skip(id_by2[o], False)
+                                st.success(f"已恢复 {len(opt_restore)} 个编号的标注。")
+                                st.rerun()
 
     # ── 人物档案（需求 4）：姓名/性别/出生年/关系/备注 ──
     c = panel("人物档案", "记录每位已标注人物的基本信息与和你的关系")
