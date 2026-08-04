@@ -40,3 +40,6 @@ audio_archive/*
 *.aac
 *.db
 *.log
+
+# ===== 一次性运维工具（定时任务运行产物，不入库） =====
+runtime_summaries/
