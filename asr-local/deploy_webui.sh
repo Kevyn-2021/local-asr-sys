@@ -25,8 +25,9 @@ python3 -m py_compile "${LOCAL_ROOT}/scripts/webui.py" "${LOCAL_ROOT}/scripts/pr
 echo "    OK"
 
 echo "==> 3/5 上传 Web 与 CLI 运行时 + Streamlit 主题配置"
-# 注意: config/settings.py 不部署——ThinkPad 上的生产配置（路径/模型目录/镜像）与暂存区不同，
-#       且其 SUPPORTED_EXTENSIONS 已含 .opus，无需改动。
+# 注意: config/settings.py 不部署（设计约定）——ThinkPad 保留自己的生产配置（运行时由 .env 的 HF_HOME/ASR_PROJ_ROOT 等覆盖）。
+#       settings.py 已纳入 git 版本管理（v2.37 起以 ThinkPad 生产版本为基准，MacBook 与 ThinkPad 两端文件一致），
+#       不在部署清单内：部署覆盖会冲掉 ThinkPad 上手工调整的配置，故由手动 scp 同步。
 # 其余文件不含机器特定路径（路径都从 settings 导入），可安全覆盖。
 scp -q "${LOCAL_ROOT}/scripts/webui.py" "${REMOTE_HOST}:${REMOTE_ROOT}/scripts/webui.py"
 scp -q "${LOCAL_ROOT}/scripts/process_inbox.py" "${REMOTE_HOST}:${REMOTE_ROOT}/scripts/process_inbox.py"

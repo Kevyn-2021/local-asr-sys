@@ -12,9 +12,6 @@ venv/
 .env
 .hf_token
 *.local
-# 全局配置设计例外（v2.33）：两端允许且应当存在差异（MODELS_DIR 默认值），
-# 不随 deploy_webui.sh 部署、不入 git；修改后需手动 scp + sed 恢复生产默认值
-**/config/settings.py
 
 # ===== 模型权重（体积大 + 许可限制，自行下载） =====
 models/
