@@ -81,7 +81,7 @@ VOICEPRINT_CONFIG = {
 }
 
 # ---------- ASR (Qwen3-ASR-1.7B) ----------
-# v2.31 升级 0.6B -> 1.7B；v2.32 加载精度定稿为显式 FP32（CPU 有 oneDNN 优化，速度快于 bf16），
+# v2.31 定稿 Qwen3-ASR-1.7B；v2.32 加载精度定稿为显式 FP32（CPU 有 oneDNN 优化，速度快于 bf16），
 # 实测：1.11× 实时、峰值内存 11.8GB（16GB 系统留 ~4GB 余量）；内存红线放宽至 <12GB（PRD §5.1）。
 # 若内存紧张可回退默认精度（bf16：3.14× 实时 / 5.2GB）——移除下方 torch_dtype 即可（见 TDD §3.4）。
 ASR_CONFIG = {

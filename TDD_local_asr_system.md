@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.41  
+**版本**: v2.42  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -660,6 +660,7 @@ MEMORY_CONFIG = {
 | v2.39 | 2026-08-04 | **顶部锁定导航条修复（webui.py §4.7 / PRD §8.2）**: ① **吸顶选择器修正**——Streamlit 1.60 实测 `st.columns` 顶层容器为 **`stLayoutWrapper`**（`stElementContainer` 只是列内元素包装），v2.38 用 `stElementContainer` 导致吸顶/底边框/留白全部未生效（无头 Chrome 实测 DOM + 注入 sticky 验证）；② **页签与下方面板间距加大**——吸顶条 `padding-bottom` 0.9rem→**1.15rem**，四个 tab 间距一致；③ **分段控件适配 1.60 新渲染**——`stSegmentedControl label` 结构不存在，改为 `div[role="radiogroup"] button`（`aria-checked="true"` 选中态恢复 KVI 暖赭高亮 + min-width 8.5em），老版本 label 规则保留兜底；④ 部署验证：无头 Chrome 滚动后 topbarTop=0、`cssHit=1` |
 | v2.40 | 2026-08-05 | **顶部品牌改版 + 页签选中态去背景（webui.py §4.7 / PRD §8.2）**: ① 品牌名 `ASR 本地转录系统` → **`Local ASR System`**，删除 `.title-dot` 暖赭小方块（HTML span + CSS 一并移除），`st.set_page_config(page_title=...)` 同步改英文；② 品牌块右移——`.topbar-title` 增加 `padding-left: 0.5rem`（标题与北京时间整体右移，不贴左边界）；③ 页签选中态去背景——`button[aria-checked="true"]` 的 `background` 改 `transparent !important`（移除 `--accent-soft` 背景与 accent 边框色），保留加粗暖赭文字（`color: var(--accent); font-weight: 600`）；④ 部署验证：无头 Chrome 实测选中按钮 `backgroundColor=rgba(0,0,0,0)`、品牌文本为 Local ASR System、吸顶回归正常 |
 | v2.41 | 2026-08-05 | **顶部导航条单行布局（webui.py §4.7 / PRD §8.2）**: ① **品牌字号与面板标题一致**——`.topbar-brand` 1.45rem/700 → **1.05rem/600**（同 `.panel-title`「收件箱 · 手动处理」）；② **北京时间移到第一行**——`.topbar-title` 由 `flex-direction: column` 改 **`row` + `align-items: baseline` + `gap: 12px` + `white-space: nowrap`**，时间字号 0.82rem 不变；③ **导航整体右移 12px**——`div[role="radiogroup"]` 加 `margin-left: 0.75rem`（列比保持 1.2:1.8）；④ 单行可行性实测：品牌文字 1.05rem≈135px + 时间≈194px ≈375px < 品牌列 360px、导航组 481px < 导航列 548px，放得下不换行；⑤ 部署验证：品牌/时间同行、导航未溢出列宽、无横向滚动、吸顶正常 |
+| v2.42 | 2026-08-05 | **移除 Qwen3-ASR-0.6B（ThinkPad 模型清理 / settings.py / PRD §6.1、§8.2）**: ① **删除 ThinkPad 本地模型**——`models/Qwen3-ASR-0.6B-hf`（1.5G，`HF_HOME`=models 由 .env 覆盖）+ `~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-0.6B-hf` 残留指针（12K），删除后全盘 `find -iname "*0.6B*"` 无残留，`models/Qwen3-ASR-1.7B-hf`（4.1G）完好；② **settings.py 注释清理**——"v2.31 升级 0.6B → 1.7B"改"v2.31 定稿 1.7B（v2.42 起移除 0.6B）"，并手动 scp 同步到 ThinkPad（settings.py 不随 deploy 部署，v2.37 约定）；③ **PRD 当前状态描述清理**——§6.1 模型条目移除 0.6B 对比、§8.2 技术栈表"优于 0.6B"改为"表现可靠"；④ 变更日志历史条目保留（v1.2/v2.18/v2.31 等为升级过程记录，不篡改历史） |
 
 ---
 
