@@ -13,6 +13,9 @@ venv/
 .hf_token
 *.local
 
+# ===== 敏感/个人备注文档（网络地址、代理、设备、家庭标签等，禁止入库） =====
+SEC_local_asr_notes.md
+
 # ===== 模型权重（体积大 + 许可限制，自行下载） =====
 models/
 model_cache/
