@@ -231,18 +231,49 @@ class AsrPipeline:
                     return True
             return False
 
+        # v2.53：ASR 段合并根治——
+        # 1) 逐段固定开销（特征提取 + 解码启动 + 最多 512 token 生成）远大于内容转录，
+        #    时间 ≈ 段数 × 每段开销（历史 FP32 ~25-33s/段，bf16 再乘 2.5-3×），
+        #    合并相邻短段直接砍段数，恢复"ASR 只花语音时长"的 VAD 收益；
+        # 2) 段长设上限，约束单段峰值内存（torch CPU 内存池不归还峰值，
+        #    曾见单文件 ASR 内存从 5.3GB 涨到 14GB、逼近 OOM）。
+        merge_gap_s = float(ASR_CONFIG.get("segment_merge_gap_s", 1.5))
+        seg_max_s = float(ASR_CONFIG.get("segment_max_s", 60.0))
+        raw_segs = [(ds.start_offset_s, ds.end_offset_s) for ds in diar
+                    if vad_has_overlap(ds.start_offset_s, ds.end_offset_s)]
+        merged_segs: list[tuple[float, float]] = []
+        for s, e in raw_segs:
+            if merged_segs and (s - merged_segs[-1][1]) <= merge_gap_s \
+                    and (e - merged_segs[-1][0]) <= seg_max_s:
+                merged_segs[-1] = (merged_segs[-1][0], e)
+            else:
+                merged_segs.append((s, e))
+        if len(merged_segs) != len(raw_segs):
+            log.info("[pipeline] ASR 段合并：%d -> %d 段（合并间隔 ≤%.1fs，段长上限 %.0fs）",
+                     len(raw_segs), len(merged_segs), merge_gap_s, seg_max_s)
+
+        def speaker_for(so: float, eo: float) -> str:
+            """合并段内说话人：取完全包含该段或起始点所在的分离段（连续语音通常同一人）"""
+            for ds in diar:
+                if ds.start_offset_s <= so and ds.end_offset_s >= eo:
+                    return ds.speaker_label
+                if ds.start_offset_s > eo:
+                    break
+            for ds in diar:
+                if ds.start_offset_s <= so < ds.end_offset_s:
+                    return ds.speaker_label
+            return diar[0].speaker_label if diar else "SPEAKER_00"
+
         rows: list[SegmentRow] = []
         processed_at = datetime.now().astimezone(BJT).isoformat()
         archive_placeholder: Path | None = None
 
-        for ds in diar:
-            if not vad_has_overlap(ds.start_offset_s, ds.end_offset_s):
-                continue
-            # 裁出原始偏移对应的波形，送 ASR
+        for idx, (s0, e0) in enumerate(merged_segs, start=1):
+            # 裁出原始偏移对应的波形，送 ASR（合并段起点/终点）
             try:
-                res = self.asr.run_segment(audio, ds.start_offset_s, ds.end_offset_s)
+                res = self.asr.run_segment(audio, s0, e0)
             except Exception as e:
-                log.warning("ASR 段失败 [%s-%s]: %s", ds.start_offset_s, ds.end_offset_s, e)
+                log.warning("ASR 段失败 [%s-%s]: %s", s0, e0, e)
                 continue
             if not res.text.strip():
                 continue
@@ -250,8 +281,8 @@ class AsrPipeline:
             clean_text = _clean_asr_text(res.text)
             if not clean_text:
                 continue
-            # 说话人标签（声纹簇已含全局编号/姓名，直接用）
-            mr = sp_match.get(ds.speaker_label)
+            # 说话人标签（声纹簇已含全局编号/姓名，直接用；合并段取起始分离段的说话人）
+            mr = sp_match.get(speaker_for(s0, e0))
             if mr is None:
                 speaker_label = "unknown_0000"
                 score = None
@@ -259,15 +290,15 @@ class AsrPipeline:
                 speaker_label = mr.person_name
                 score = mr.score
 
-            abs_start = offset_to_absolute(recording_start, ds.start_offset_s).astimezone(BJT).isoformat()
-            abs_end   = offset_to_absolute(recording_start, ds.end_offset_s).astimezone(BJT).isoformat()
+            abs_start = offset_to_absolute(recording_start, s0).astimezone(BJT).isoformat()
+            abs_end   = offset_to_absolute(recording_start, e0).astimezone(BJT).isoformat()
             rows.append(SegmentRow(
                 source_file=path.name,
                 file_hash=file_hash,
                 recording_start_time=recording_start.isoformat(),
                 processed_at=processed_at,
-                segment_start_offset=ds.start_offset_s,
-                segment_end_offset=ds.end_offset_s,
+                segment_start_offset=s0,
+                segment_end_offset=e0,
                 absolute_start_time=abs_start,
                 absolute_end_time=abs_end,
                 speaker=speaker_label,
@@ -281,6 +312,8 @@ class AsrPipeline:
                 audio_path=None,
                 transcript_path=None,
             ))
+            if idx % 8 == 0:
+                gc.collect()  # v2.53：定期回收，缓解 CPU 内存池高水位堆积
         self._unload_asr()
 
         if not rows:

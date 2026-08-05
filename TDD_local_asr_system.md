@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.52  
+**版本**: v2.53  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -389,6 +389,7 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
   ```
 - **v2.32 定稿 FP32**：CPU 无 AVX512-BF16，bf16 回退转换计算慢（3.14× 实时）；FP32 有 oneDNN 优化（1.11× 实时），代价是权重 ~6.8GB、峰值内存 11.8GB（红线放宽至 <12GB）。上述对齐代码保留，fp32 下不触发，兼容将来默认精度模型。
 - **v2.49 精度动态分配（默认 auto）**：`ASR_CONFIG["torch_dtype"]` 默认 **`auto`**——pipeline 按音频时长决策：时长 ≥ `torch_dtype_big_s`（默认 **1800s = 30 分钟**）→ `bfloat16`（内存约减半、3.14× 实时）；小于阈值 → `float32`（1.11× 实时）。决策发生在 `pipeline.process_file` 第 (7) 步（`duration_s` 已知），以 `torch_dtype` 参数传入 `QwenAsr`；环境变量可覆盖：`ASR_TORCH_DTYPE=float32|bfloat16|auto`、`ASR_TORCH_DTYPE_BIG_S=<秒>`。背景（v2.48 实测）：58.6 分钟大文件 FP32 下 ASR 峰值 ~15GB，两次 OOM；bf16 正常。阈值依据：FP32 成功处理过的最大文件 23.6 分钟，30 分钟留足余量，可按机器内存调整。
+- **v2.53 段合并根治（段开销 + 内存峰值）**：ASR 是**逐段转录**，每段固定开销（特征提取 + `generate` 启动 + 最多 512 token 解码）远大于内容转录——实测 FP32 ≈ **25-33s/段**（历史 ~5 分钟语音、20-32 段需 12-13 分钟，并非文档的 1.11× 实时），bf16 再乘 2.5-3×；且单文件 ASR 期间 torch CPU 内存池不归还峰值（实测从 5.3GB 涨到 14GB，逼近 OOM）。v2.53 修复：① **合并相邻短段**——`ASR_CONFIG.segment_merge_gap_s`（默认 1.5s）内间隔合并、合并后段长不超过 `segment_max_s`（默认 60s），把 140 段连续短语音合并到 ~6 段（实测），直接砍掉"段数 × 每段开销"这个主乘数，恢复 VAD 对 ASR 的收益（只花语音时长）；② 段长上限同时约束单段峰值内存；③ 每 8 段 `gc.collect()` 缓解高水位堆积；④ 合并段说话人取"起始分离段"的说话人；合并后每行时间戳为合并段起止（粒度变粗，如需句子级时间戳可后续启用 `return_timestamps` 细分）。环境变量：`ASR_SEGMENT_MERGE_GAP_S` / `ASR_SEGMENT_MAX_S`。
 
 #### 离线加载（v2.18 修复 + v2.32 精度定稿）
 Qwen3-ASR 模型以**自定义解压目录**存放于 `MODELS_DIR/Qwen3-ASR-1.7B-hf/`（含 `config.json` / `model.safetensors` / `tokenizer.json` 等）。v2.32 起显式 `torch_dtype=torch.float32`（FP32 换取 CPU 速度，见上节）。
@@ -692,6 +693,7 @@ MEMORY_CONFIG = {
 | v2.48 | 2026-08-05 | **ASR 加载精度可配置 + 大文件 OOM 兜底（settings.py §3.4 / asr.py / 运维）**: ① **事件**——运行节点处理 58.6 分钟大文件 `2026-08-04_14_07_26.wav` 两次被内核 OOM 杀死（WebUI 启动 11:02:59 峰值 14.6GB；standalone 13:30:54 峰值 14.96GB），均死在 ASR 转录阶段（FP32 模型 ~11.8GB + 波形/运行缓冲超出 16GB）；② **修复**——`ASR_CONFIG["torch_dtype"]` 支持环境变量 `ASR_TORCH_DTYPE` 覆盖（默认 `float32`，`bfloat16` 内存约减半），`asr.py` 三处加载统一走 `model_kwargs`；③ **恢复**——重置残留 status/锁，以 `ASR_TORCH_DTYPE=bfloat16` standalone 重启，VAD 拼接 58.6→5.2 分钟语音，内存可用 ~12GB 正常推进；④ **备注**——办公室网络可直连 huggingface.co（302），家网需代理/hf-mirror 兜底（网络环境规则本机维护）；定时脚本已改多 IP 尝试；⑤ 部署验证：asr.py/settings.py 两端 md5 一致，UI_VERSION 2026-08-05-15:15:05 |
 | v2.51 | 2026-08-05 | **敏感/个人信息去敏迁移（PRD/TDD → SEC_local_asr_notes.md，不入库）**: ① 新建 `SEC_local_asr_notes.md`（3 大写字母前缀，与 PRD/TDD 同风格），收录：ThinkPad 网络环境规则（办公室免代理直连 / 家网需 open_proxy）、open_proxy 用法、网络地址清单（办公室/家里/Tailscale IP）、访问设备型号、家庭声纹标注标签、3 款拾音设备特点与总结；② `.gitignore` 加入 `SEC_local_asr_notes.md`，不推送 GitHub；③ PRD/TDD 中性化——具体 IP/代理端口/设备型号/家庭人物称呼示例全部替换为中性描述并注明本机维护；④ 部署脚本默认地址、open_proxy 命令等敏感细节同步迁移；⑤ 校验：git 跟踪文件不再含上述具体 IP/代理端口/家庭称呼 |
 | v2.52 | 2026-08-05 | **消除 PRD/TDD 对 SEC 的引用（GitHub 死链修复，文档自洽）**: ① 移除 PRD/TDD 中所有 `SEC_local_asr_notes.md` 链接与"见 SEC 文档"引导（该文件不入库，GitHub 上不存在，避免读者点死链）；② 相关表述改为自洽中性文案——"本机维护、不随仓库发布"；③ 变更日志中保留对本次迁移的历史记录（纯文本文件名，无链接）；④ README 补充说明：敏感运维细节（网络地址/代理/个人标签）本地维护、不随仓库发布；⑤ 校验：PRD/TDD 中无任何指向不入库文件的链接 |
+| v2.53 | 2026-08-05 | **ASR 段合并根治（pipeline.py §3.4 / settings.py）**: ① **问题**——58.6 分钟文件（VAD 140 段、语音 5.2 分钟）bf16 ASR 跑了 89 分钟仍未完成：逐段固定开销（~25-33s/段 FP32）被 bf16 放大（~2.5-3×），时间 ≈ 段数 × 每段开销；且单文件 ASR 内存从 5.3GB 涨到 14GB（torch CPU 内存池不还峰值），逼近 OOM；② **修复**——ASR 前合并相邻短段（间隔 ≤ `segment_merge_gap_s` 默认 1.5s，合并后段长 ≤ `segment_max_s` 默认 60s）：140 段连续短语音实测合并到 6 段，直接砍掉主乘数，恢复 VAD 对 ASR 的收益；段长上限同时约束单段峰值内存；每 8 段 `gc.collect()`；③ **行为变化**——合并段每行时间戳为合并段起止、说话人取起始分离段（粒度变粗，句子级时间戳留待 `return_timestamps` 细分）；④ **终止与恢复**——终止了 89 分钟的 bf16 运行（SIGTERM 未响应→SIGKILL+手动重置 status/锁），收件箱文件保留待用户手动重跑；⑤ 验证：合并逻辑本地单测通过（连续短段 140→6、分散长段不合并、超上限不合并）；部署验证：pipeline.py/settings.py 两端 md5 一致 |
 | v2.49 | 2026-08-05 | **ASR 精度默认改为 auto 动态分配（settings.py §3.4 / asr.py / pipeline.py）**: ① **默认 `auto`**——`pipeline.process_file` 按音频时长决策：≥1800s（30 分钟，可配 `ASR_TORCH_DTYPE_BIG_S`）→ bf16，否则 FP32；以 `torch_dtype` 参数传入 `QwenAsr`（不再只依赖环境变量）；② **asr.py**——构造函数新增 `torch_dtype` 参数（None 时读 settings，`auto` 兜底为 float32）；③ **pipeline.py**——第 (7) 步决策并记录 `[pipeline] ASR 精度决策：X（音频 Y 分钟）`；④ 阈值依据：FP32 成功最大 23.6 分钟、OOM 最小 58.6 分钟，30 分钟留余量；⑤ 部署验证：asr.py/pipeline.py/settings.py 两端 md5 一致 |
 | v2.50 | 2026-08-05 | **文件名时间提取格式三处统一（settings.py §3.5 / PRD FR-001-TS / TDD §3.5、§4.4）**: ① **实现修正**——紧凑式正则 `YYYYMMDD_HHMMSS` 的日期-时间分隔符由 `_` 放宽为 `[-_]`：新增识别 `recording-20260731-143052`、`20260731-143052-recording`（此前只能下划线）；② **文档统一**——PRD「支持的文件名格式」与 TDD §3.5 正则/§4.4 描述改为同一清单：长格式（六个字段 `[-_]` 任意混用，可带前后缀）/ 紧凑式（`[-_]` 均可，可带前后缀）/ ISO `YYYYMMDDTHHMMSS`；`re.search` 不锚定；③ 验证：8 种格式（含 7 种建议 + ISO）全部正确提取，无匹配样例（无时间数字串）正确返回 None |
 
