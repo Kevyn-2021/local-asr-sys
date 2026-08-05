@@ -31,7 +31,7 @@ class AsrResult:
 
 
 class QwenAsr:
-    def __init__(self, hf_token: str):
+    def __init__(self, hf_token: str, torch_dtype: str | None = None):
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         repo = ASR_CONFIG["model_repo"]
         # v2.18 离线加载修复：Qwen3-ASR 模型以"自定义解压目录"存放于
@@ -42,10 +42,12 @@ class QwenAsr:
         # 因此加载顺序：自定义目录 → hub 缓存(local_files_only) → 联网兜底。
         # v2.32：显式 torch_dtype=torch.float32——1.7B 默认精度为 bf16，
         # CPU 上 bf16 无 AVX512-BF16 指令回退转换，速度约 3.1× 实时；fp32 有 oneDNN 优化更快。
-        # v2.48：精度可用 ASR_CONFIG["torch_dtype"] 控制（环境变量 ASR_TORCH_DTYPE 覆盖，
-        # 默认 float32）；bfloat16 内存约减半，供大文件/低内存时兜底。
+        # v2.49：精度由调用方传入（pipeline 按音频时长 auto 分配）或读 ASR_CONFIG；
+        # bfloat16 内存约减半，供大文件/低内存时兜底（3.14× 实时）。
         local_dir = MODELS_DIR / "Qwen3-ASR-1.7B-hf"
-        dtype_str = str(ASR_CONFIG.get("torch_dtype", "float32")).lower()
+        dtype_str = str(torch_dtype or ASR_CONFIG.get("torch_dtype", "auto")).lower()
+        if dtype_str == "auto":  # 兜底：调用方未解析时按小文件精度处理
+            dtype_str = "float32"
         torch_dtype = {"float32": torch.float32,
                        "bfloat16": torch.bfloat16,
                        "float16": torch.float16}.get(dtype_str)

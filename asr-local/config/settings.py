@@ -89,11 +89,15 @@ ASR_CONFIG = {
     "use_flash_attn":    False,   # CPU 环境关闭
     "language":          "zh",
     "return_timestamps": True,
-    # v2.48：加载精度可用环境变量 ASR_TORCH_DTYPE 覆盖（float32 默认 / bfloat16 内存兜底）。
-    # bf16 权重内存约减半（~5.2GB），但 CPU 无 AVX512-BF16 回退转换，速度约 3.14× 实时
-    # （FP32 oneDNN 优化 1.11× 实时）。大文件/16GB 机器 OOM 时临时切 bf16 处理：
-    #   ASR_TORCH_DTYPE=bfloat16 bash run.sh 或单独启动 process_inbox.py
-    "torch_dtype":       os.environ.get("ASR_TORCH_DTYPE", "float32"),
+    # v2.49：加载精度默认 "auto"——按音频时长动态分配：
+    #   时长 >= torch_dtype_big_s（默认 1800s = 30 分钟）→ bfloat16（内存约减半，3.14× 实时）
+    #   时长 <  阈值                          → float32（oneDNN 优化 1.11× 实时）
+    # 16GB 机器上 FP32 处理大文件会在 ASR 阶段 OOM（58.6 分钟文件实测峰值 ~15GB），
+    # 因此大文件自动切 bf16 保稳定。可用环境变量覆盖：
+    #   ASR_TORCH_DTYPE=float32|bfloat16|auto   （强制固定精度或恢复自动）
+    #   ASR_TORCH_DTYPE_BIG_S=<秒>              （自定义大文件阈值）
+    "torch_dtype":       os.environ.get("ASR_TORCH_DTYPE", "auto"),
+    "torch_dtype_big_s": float(os.environ.get("ASR_TORCH_DTYPE_BIG_S", "1800")),
 }
 
 # ---------- 内存编排 (PRD 5.1.1) ----------

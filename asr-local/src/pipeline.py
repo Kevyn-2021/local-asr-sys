@@ -14,6 +14,7 @@ from typing import Callable
 
 from src.archive import _clean_asr_text, archive_audio, move_to_error, write_transcript_backups
 from config.settings import (
+    ASR_CONFIG,
     DIARIZATION_CONFIG,
     MEMORY_CONFIG,
     SUPPORTED_EXTENSIONS,
@@ -91,11 +92,11 @@ class AsrPipeline:
                 log.info("[pipeline] 加载声纹识别引擎")
             self._load_with_timeout(_do, "声纹识别引擎")
 
-    def _load_asr(self):
+    def _load_asr(self, torch_dtype: str | None = None):
         if self.asr is None:
             def _do():
                 from .asr import QwenAsr
-                self.asr = QwenAsr(self.hf_token)
+                self.asr = QwenAsr(self.hf_token, torch_dtype=torch_dtype)
                 log.info("[pipeline] 加载 Qwen3-ASR")
             self._load_with_timeout(_do, "Qwen3-ASR")
 
@@ -210,7 +211,13 @@ class AsrPipeline:
         # (7) ASR — 对每个 diarization 段取音频做识别
         self._report(status_cb, "ASR 转录")
         try:
-            self._load_asr()
+            # v2.49：按音频时长动态分配加载精度（auto），大文件 bf16 兜底防 OOM
+            dtype = str(ASR_CONFIG.get("torch_dtype", "auto")).lower()
+            if dtype == "auto":
+                big_s = float(ASR_CONFIG.get("torch_dtype_big_s", 1800))
+                dtype = "bfloat16" if duration_s >= big_s else "float32"
+            log.info("[pipeline] ASR 精度决策：%s（音频 %.1f 分钟）", dtype, duration_s / 60)
+            self._load_asr(torch_dtype=dtype)
         except Exception as e:
             move_to_error(path, reason=f"ASR 加载失败: {e}")
             return PipelineResult(False, error_msg=f"ASR 加载失败: {e}")
