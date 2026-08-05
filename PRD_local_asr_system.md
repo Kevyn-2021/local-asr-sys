@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v2.51  
+**版本**: v2.52  
 **日期**: 2026-08-04  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -22,9 +22,9 @@
 | 项目 | 内容 |
 |------|------|
 | 产品名称 | 本地音频转录与声纹识别系统 |
-| 目标平台 | Linux (Ubuntu 24)，单机运行节点（硬件型号见 [SEC](./SEC_local_asr_notes.md)） |
+| 目标平台 | Linux (Ubuntu 24)，单机运行节点（硬件信息本机维护，不随仓库发布） |
 | 硬件约束 | Intel i5-10210U, 16GB RAM, 无独显 |
-| 访问设备 | 开发机（办公室）、家用电脑（家里），经 Tailscale 加密隧道访问运行节点的 Web UI（设备型号见 [SEC](./SEC_local_asr_notes.md)） |
+| 访问设备 | 开发机（办公室）、家用电脑（家里），经 Tailscale 加密隧道访问运行节点的 Web UI（设备信息本机维护，不随仓库发布） |
 | 数据隐私 | 音频与转录结果只存在 ThinkPad 本地，不上云；跨设备访问全程走 Tailscale 端到端加密，不经第三方服务器中转 |
 
 ---
@@ -322,11 +322,11 @@
 - **技术**: Streamlit，监听 `0.0.0.0:8501`（systemd 用户服务 `asr-webui.service` 常驻运行、开机自启）
 - **浏览器访问环境**:
   - 地址格式：`http://<ThinkPad当前IP>:8501`（端口 8501）
-  - 当前示例：`http://<ThinkPad当前IP>:8501`（办公室/家里的真实 IP 见 [SEC](./SEC_local_asr_notes.md)）；Tailscale `http://<ThinkPad-Tailscale-IP>:8501`
+  - 当前示例：`http://<ThinkPad当前IP>:8501`；Tailscale `http://<ThinkPad-Tailscale-IP>:8501`
   - **注：以上均为示例地址——ThinkPad 随网络环境更换 IP，实际使用时请替换为 ThinkPad 当前的真实地址**
   - 建议加入浏览器书签，一键打开
 - **部署环境（SSH）**:
-  - SSH 地址：`ssh kevin@<ThinkPad当前IP>`（端口 22，默认）；部署脚本内置默认地址（真实 IP 见 [SEC](./SEC_local_asr_notes.md)）
+  - SSH 地址：`ssh kevin@<ThinkPad当前IP>`（端口 22，默认）；部署脚本内置默认地址（本机维护，不随仓库发布）
   - 代码目录：`/home/kevin/asr_sys_local/asr-local/`；数据目录：`/home/kevin/asr_sys_local/audio_inbox/`（收件箱）、`/home/kevin/asr_sys_local/audio_archive/`（归档与数据库）
   - 部署命令：`bash deploy_webui.sh`；ThinkPad 更换网络后：`ASR_REMOTE_HOST=kevin@<新IP> bash deploy_webui.sh`
   - **注：IP 需替换为 ThinkPad 当前的真实地址**
@@ -364,7 +364,7 @@
 
 #### FR-008-T: 跨设备安全访问 (Tailscale)
 - **优先级**: P0
-- **描述**: 用户本人的多台设备（开发机 / 家用电脑 / 运行节点，型号见 [SEC](./SEC_local_asr_notes.md)）组成 Tailscale 虚拟局域网 (WireGuard 加密)，通过运行节点的 Tailscale 地址直接访问 Web UI
+- **描述**: 用户本人的多台设备（开发机 / 家用电脑 / 运行节点）组成 Tailscale 虚拟局域网 (WireGuard 加密)，通过运行节点的 Tailscale 地址直接访问 Web UI
 - **要点**:
   - 数据**只存于 ThinkPad**，其他设备仅浏览器访问，不落地副本
   - 传输全程端到端加密，不经第三方中转服务器（NAT 打洞成功后为 P2P 直连）
@@ -534,7 +534,7 @@ CREATE TABLE transcripts (
 -- ====== 声纹库表 ======
 CREATE TABLE voiceprints (
     person_id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    person_name             TEXT NOT NULL UNIQUE,    -- 姓名/称呼（如：本人、家人；实际家庭称呼见 SEC 文档）
+    person_name             TEXT NOT NULL UNIQUE,    -- 姓名/称呼（如：本人、家人；实际称呼由用户自行标注）
     is_owner                INTEGER DEFAULT 0,       -- 1 = 用户本人（仅一条，CLI 校验：已存在本人则拒绝）
     embedding               BLOB NOT NULL,           -- 声纹向量
     sample_audio_path       TEXT,                    -- 录入样本路径
@@ -1044,7 +1044,8 @@ $ bash run.sh
 | v2.45 | 2026-08-05 | **不标注操作区对齐修正（FR-003-CLUSTER）**：v2.44 的 `vertical_alignment="center"` 把按钮对齐到了「文字+下拉框」整体的中间（既没对齐文字也没对齐框）；实测按钮与下拉框**等高 40px**，改为 `vertical_alignment="bottom"` 后按钮与下拉框本身精确对齐（label 在框上方不参与定位）；工程细节见 [TDD v2.45](./TDD_local_asr_system.md#6-变更日志) |
 | v2.46 | 2026-08-05 | **模型目录清理 + step2 下载口径重写（§5.3/§6.1/§9/§11.3）**：① 清理 ThinkPad 冗余模型约 145M（step2 旧版松散目录 ×3、顶层旧 hub 缓存重复 ×2、community-1 顶层残缺、silero-vad-ms、xet）；② **发现并记录 3.1 管线的 PLDA 依赖 `pyannote/speaker-diarization-community-1`**（误删后离线加载失败、已恢复，删除模型必须以实际离线加载验证为准）；③ step2 重写——废弃的 huggingface-cli 改为 Python `snapshot_download`，pyannote 全部入 hub 缓存（含 wespeaker 与 community-1），Silero 固定到 vad.py 实际目录，目录与运行时逐一对齐；④ 网络兜底结论更新——hf-mirror 实测可用（`HF_ENDPOINT`），覆盖 v2.31"不可用"旧结论；工程细节见 [TDD v2.46](./TDD_local_asr_system.md#6-变更日志) |
 | v2.47 | 2026-08-05 | **代理用法记录（迁移 SEC）+ 残留目录清理（工程运维）**：① 记录本地代理 open_proxy 用法并迁移至 `SEC_local_asr_notes.md`（敏感信息不入库），供后续模型下载使用；② 清理错误路径残留目录 `/home/kevin/audio_archive`（0 字节空库，settings 默认路径 + 未加载 .env 所致），并加 `db.py` 告警防护防止复发；功能需求无变化，工程细节见 [TDD v2.47](./TDD_local_asr_system.md#6-变更日志) |
-| v2.51 | 2026-08-05 | **敏感/个人信息去敏迁移（文档工程）**：① 新建 `SEC_local_asr_notes.md` 集中存放网络环境规则（办公室直连 / 家网代理）、open_proxy 用法、网络地址、设备型号、家庭声纹标签、拾音设备特点，**加入 .gitignore 不推送 GitHub**；② PRD 中具体 IP、设备型号、家庭人物示例全部中性化（真实信息见 SEC）；功能需求无变化，工程细节见 [TDD v2.51](./TDD_local_asr_system.md#6-变更日志) |
+| v2.51 | 2026-08-05 | **敏感/个人信息去敏迁移（文档工程）**：① 新建 `SEC_local_asr_notes.md` 集中存放网络环境规则（办公室直连 / 家网代理）、open_proxy 用法、网络地址、设备型号、家庭声纹标签、拾音设备特点，**加入 .gitignore 不推送 GitHub**；② PRD 中具体 IP、设备型号、家庭人物示例全部中性化（真实信息本机维护）；功能需求无变化，工程细节见 [TDD v2.51](./TDD_local_asr_system.md#6-变更日志) |
+| v2.52 | 2026-08-05 | **消除对 SEC 的引用（GitHub 死链修复）**：移除 PRD 中所有 `SEC_local_asr_notes.md` 链接与"见 SEC 文档"引导，改为自洽中性表述（"本机维护、不随仓库发布"）；变更日志保留迁移历史（纯文本文件名，无链接）；功能需求无变化，工程细节见 [TDD v2.52](./TDD_local_asr_system.md#6-变更日志) |
 | v2.48 | 2026-08-05 | **ASR 加载精度可配置（FR-004）**：① `ASR_CONFIG.torch_dtype` 支持环境变量 `ASR_TORCH_DTYPE` 覆盖——默认 **FP32**（1.11× 实时，内存红线 <12GB 不变），大文件/低内存时切 **bf16** 兜底（内存约减半、3.14× 实时）；② 背景——58.6 分钟大文件两次 OOM（FP32 峰值 ~15GB 超出 16GB 机器），切 bf16 后正常处理；③ 精度开关仅影响加载精度，不影响转录结果；工程细节见 [TDD v2.48](./TDD_local_asr_system.md#6-变更日志) |
 | v2.49 | 2026-08-05 | **ASR 精度动态分配（FR-004）**：① 默认 `auto`——按音频时长自动选择加载精度：**≥30 分钟 → bf16**（内存约减半、3.14× 实时），**<30 分钟 → FP32**（1.11× 实时）；保证大文件不再 OOM、小文件速度不降；② 阈值与精度均可配置（`ASR_TORCH_DTYPE` / `ASR_TORCH_DTYPE_BIG_S`）；③ 精度不影响转录结果；工程细节见 [TDD v2.49](./TDD_local_asr_system.md#6-变更日志) |
 | v2.50 | 2026-08-05 | **文件名时间提取格式统一（FR-001-TS）**：① 紧凑式支持横线/下划线两种分隔（`recording_20260731_143052` 与 `recording-20260731-143052` 均可识别），时间前后可带任意前缀/后缀；② PRD「支持的文件名格式」与 TDD 正则/描述同步为同一清单（长格式混用分隔符 / 紧凑式 / ISO T 分隔），消除两处文档与实现的口径差异；工程细节见 [TDD v2.50](./TDD_local_asr_system.md#6-变更日志) |

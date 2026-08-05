@@ -7,6 +7,7 @@ A fully **local, offline** audio transcription and speaker identification system
 - **Local-first**: All inference runs on the device CPU (VAD / speaker diarization / voiceprint identification / speech-to-text), no network required
 - **Data stays on-device**: Transcripts, voiceprints, and text backups are stored in a local SQLite database and local directories, fully under your control
 - **Runs offline**: After model weights are downloaded once, the system works completely offline with no external dependencies
+- **Sensitive operational details stay local**: Network addresses, proxy setup, device info, and personal labels are maintained in a local-only notes file (not in this repository), so nothing private is published here
 
 ## Features
 
