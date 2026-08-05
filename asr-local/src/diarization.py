@@ -172,6 +172,33 @@ class Diarizer:
                 for seg in segments:
                     seg.start_offset_s = map_back(seg.start_offset_s)
                     seg.end_offset_s = map_back(seg.end_offset_s)
+
+            # v2.57 根治：分离段必须裁剪回真实语音片断（取 VAD 交集）——
+            # VAD 拼接把同一说话人的多个语音片断在拼接轴上连成一段，映射回原时间轴后
+            # 会把中间的静音一起包进来（实测 5.2 分钟语音被包成 51.7 分钟的"段"，
+            # ASR 把含静音的整段都送去转录 → 内存钉满 14GB + 耗时数小时假死）。
+            if vad_segments:
+                pieces = sorted((v.start_offset_s, v.end_offset_s) for v in vad_segments)
+                clipped: list[DiarizationSegment] = []
+                for seg in segments:
+                    for ps, pe in pieces:
+                        s = max(seg.start_offset_s, ps)
+                        e = min(seg.end_offset_s, pe)
+                        if e - s > 0.05:
+                            clipped.append(DiarizationSegment(seg.speaker_label, s, e))
+                if clipped:
+                    # 裁剪后合并相邻同说话人短片断（间隔 ≤ merge_gap），保持语句连贯
+                    merge_gap = float(self.cfg.get("merge_gap_s", 2.0))
+                    clipped.sort(key=lambda x: (x.start_offset_s, x.end_offset_s))
+                    merged: list[DiarizationSegment] = []
+                    for c in clipped:
+                        if merged and merged[-1].speaker_label == c.speaker_label \
+                                and c.start_offset_s - merged[-1].end_offset_s <= merge_gap:
+                            merged[-1] = DiarizationSegment(
+                                c.speaker_label, merged[-1].start_offset_s, c.end_offset_s)
+                        else:
+                            merged.append(c)
+                    segments = merged
             return segments
         finally:
             if tmp_wav is not None:
