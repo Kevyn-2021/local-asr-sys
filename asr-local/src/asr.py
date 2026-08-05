@@ -42,14 +42,25 @@ class QwenAsr:
         # 因此加载顺序：自定义目录 → hub 缓存(local_files_only) → 联网兜底。
         # v2.32：显式 torch_dtype=torch.float32——1.7B 默认精度为 bf16，
         # CPU 上 bf16 无 AVX512-BF16 指令回退转换，速度约 3.1× 实时；fp32 有 oneDNN 优化更快。
+        # v2.48：精度可用 ASR_CONFIG["torch_dtype"] 控制（环境变量 ASR_TORCH_DTYPE 覆盖，
+        # 默认 float32）；bfloat16 内存约减半，供大文件/低内存时兜底。
         local_dir = MODELS_DIR / "Qwen3-ASR-1.7B-hf"
+        dtype_str = str(ASR_CONFIG.get("torch_dtype", "float32")).lower()
+        torch_dtype = {"float32": torch.float32,
+                       "bfloat16": torch.bfloat16,
+                       "float16": torch.float16}.get(dtype_str)
+        if torch_dtype is None:
+            log.warning("[asr] 未知 torch_dtype=%r，使用模型默认精度（不显式指定）", dtype_str)
+        model_kwargs = {"low_cpu_mem_usage": True}
+        if torch_dtype is not None:
+            model_kwargs["torch_dtype"] = torch_dtype
+        log.info("[asr] 加载精度：%s", dtype_str)
         if local_dir.exists():
             log.info("[asr] 使用本地模型目录 %s（完全离线）", local_dir)
             local_kwargs = {"token": hf_token}
             self.processor = AutoProcessor.from_pretrained(str(local_dir), **local_kwargs)
             self.model = AutoModelForMultimodalLM.from_pretrained(
-                str(local_dir), torch_dtype=torch.float32,
-                low_cpu_mem_usage=True, **local_kwargs,
+                str(local_dir), **model_kwargs, **local_kwargs,
             )
         else:
             # 兜底：hub 缓存优先，缺失时联网下载（依赖 HF_TOKEN）
@@ -58,15 +69,13 @@ class QwenAsr:
             try:
                 self.processor = AutoProcessor.from_pretrained(repo, **offline_kwargs)
                 self.model = AutoModelForMultimodalLM.from_pretrained(
-                    repo, torch_dtype=torch.float32,
-                    low_cpu_mem_usage=True, **offline_kwargs,
+                    repo, **model_kwargs, **offline_kwargs,
                 )
             except Exception:
                 log.warning("[asr] 本地缓存加载失败，尝试联网加载")
                 self.processor = AutoProcessor.from_pretrained(repo, **online_kwargs)
                 self.model = AutoModelForMultimodalLM.from_pretrained(
-                    repo, torch_dtype=torch.float32,
-                    low_cpu_mem_usage=True, **online_kwargs,
+                    repo, **model_kwargs, **online_kwargs,
                 )
         self.model.eval()
         self.cfg = ASR_CONFIG

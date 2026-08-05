@@ -89,6 +89,11 @@ ASR_CONFIG = {
     "use_flash_attn":    False,   # CPU 环境关闭
     "language":          "zh",
     "return_timestamps": True,
+    # v2.48：加载精度可用环境变量 ASR_TORCH_DTYPE 覆盖（float32 默认 / bfloat16 内存兜底）。
+    # bf16 权重内存约减半（~5.2GB），但 CPU 无 AVX512-BF16 回退转换，速度约 3.14× 实时
+    # （FP32 oneDNN 优化 1.11× 实时）。大文件/16GB 机器 OOM 时临时切 bf16 处理：
+    #   ASR_TORCH_DTYPE=bfloat16 bash run.sh 或单独启动 process_inbox.py
+    "torch_dtype":       os.environ.get("ASR_TORCH_DTYPE", "float32"),
 }
 
 # ---------- 内存编排 (PRD 5.1.1) ----------

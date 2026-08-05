@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v2.47  
+**版本**: v2.48  
 **日期**: 2026-08-04  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -1044,6 +1044,7 @@ $ bash run.sh
 | v2.45 | 2026-08-05 | **不标注操作区对齐修正（FR-003-CLUSTER）**：v2.44 的 `vertical_alignment="center"` 把按钮对齐到了「文字+下拉框」整体的中间（既没对齐文字也没对齐框）；实测按钮与下拉框**等高 40px**，改为 `vertical_alignment="bottom"` 后按钮与下拉框本身精确对齐（label 在框上方不参与定位）；工程细节见 [TDD v2.45](./TDD_local_asr_system.md#6-变更日志) |
 | v2.46 | 2026-08-05 | **模型目录清理 + step2 下载口径重写（§5.3/§6.1/§9/§11.3）**：① 清理 ThinkPad 冗余模型约 145M（step2 旧版松散目录 ×3、顶层旧 hub 缓存重复 ×2、community-1 顶层残缺、silero-vad-ms、xet）；② **发现并记录 3.1 管线的 PLDA 依赖 `pyannote/speaker-diarization-community-1`**（误删后离线加载失败、已恢复，删除模型必须以实际离线加载验证为准）；③ step2 重写——废弃的 huggingface-cli 改为 Python `snapshot_download`，pyannote 全部入 hub 缓存（含 wespeaker 与 community-1），Silero 固定到 vad.py 实际目录，目录与运行时逐一对齐；④ 网络兜底结论更新——hf-mirror 实测可用（`HF_ENDPOINT`），覆盖 v2.31"不可用"旧结论；工程细节见 [TDD v2.46](./TDD_local_asr_system.md#6-变更日志) |
 | v2.47 | 2026-08-05 | **代理用法记录 + 残留目录清理（工程运维）**：① 记录 ThinkPad 本地代理 open_proxy 的开启/关闭/状态命令（clash 7890 端口、环境变量口径），供后续模型下载使用；② 清理错误路径残留目录 `/home/kevin/audio_archive`（0 字节空库，settings 默认路径 + 未加载 .env 所致），并加 `db.py` 告警防护防止复发；功能需求无变化，工程细节见 [TDD v2.47](./TDD_local_asr_system.md#6-变更日志) |
+| v2.48 | 2026-08-05 | **ASR 加载精度可配置（FR-004）**：① `ASR_CONFIG.torch_dtype` 支持环境变量 `ASR_TORCH_DTYPE` 覆盖——默认 **FP32**（1.11× 实时，内存红线 <12GB 不变），大文件/低内存时切 **bf16** 兜底（内存约减半、3.14× 实时）；② 背景——58.6 分钟大文件两次 OOM（FP32 峰值 ~15GB 超出 16GB 机器），切 bf16 后正常处理；③ 精度开关仅影响加载精度，不影响转录结果；工程细节见 [TDD v2.48](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 

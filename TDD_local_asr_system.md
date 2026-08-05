@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.47  
+**版本**: v2.48  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -388,6 +388,7 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
       }
   ```
 - **v2.32 定稿 FP32**：CPU 无 AVX512-BF16，bf16 回退转换计算慢（3.14× 实时）；FP32 有 oneDNN 优化（1.11× 实时），代价是权重 ~6.8GB、峰值内存 11.8GB（红线放宽至 <12GB）。上述对齐代码保留，fp32 下不触发，兼容将来默认精度模型。
+- **v2.48 精度可配置（OOM 兜底）**：`ASR_CONFIG["torch_dtype"]` 可用环境变量 **`ASR_TORCH_DTYPE`** 覆盖（默认 `float32`，可设 `bfloat16`）。实测：58.6 分钟大文件在 FP32 下 ASR 阶段峰值 ~15GB（超出 16GB 机器上限，两次被 OOM killer 杀死）；切 bf16 后权重内存约减半，处理正常。用法：`ASR_TORCH_DTYPE=bfloat16 bash run.sh` 或 `nohup env ASR_TORCH_DTYPE=bfloat16 ... python scripts/process_inbox.py`（仅本次生效，默认精度不变）。
 
 #### 离线加载（v2.18 修复 + v2.32 精度定稿）
 Qwen3-ASR 模型以**自定义解压目录**存放于 `MODELS_DIR/Qwen3-ASR-1.7B-hf/`（含 `config.json` / `model.safetensors` / `tokenizer.json` 等）。v2.32 起显式 `torch_dtype=torch.float32`（FP32 换取 CPU 速度，见上节）。
@@ -683,6 +684,7 @@ MEMORY_CONFIG = {
 | v2.45 | 2026-08-05 | **不标注操作区对齐修正（webui.py §1.7）**: ① **问题**——v2.44 的 `vertical_alignment="center"` 使按钮对齐到「label 文字 + 下拉框」整体的垂直中间：实测 label 24px + 间隙 4px + 框 40px，按钮中心落在 label 与框之间（既不对齐文字也不对齐框）；② **修正**——无头 Chrome 实测按钮与下拉框**等高（均 40px）**，改用 `vertical_alignment="bottom"`：按钮底边对齐列底边（= 下拉框底边），顶部随之精确对齐下拉框；label 保持可见位于框上方、不参与按钮定位；③ 部署验证：按钮 top == 下拉框 top（941px）、left 位于框右侧，四端 md5 一致 |
 | v2.46 | 2026-08-05 | **模型目录清理 + step2 下载口径重写（§4.6 / PRD §5.3、§6.1、§9、§11.3）**: ① **ThinkPad 模型目录清理**——删除 9 项冗余（step2 旧版松散目录 pyannote-speaker-diarization-3.1/pyannote-segmentation-3.0/pyannote-embedding、顶层旧 hub 缓存 models--pyannote--segmentation-3.0/wespeaker/community-1 残缺、silero-vad-ms、xet、hub 内 community-1）约 178M；② **PLDA 依赖事故与恢复**——删除 hub 内 community-1 后离线加载管线失败（`get_plda` 需 `pyannote/speaker-diarization-community-1/plda/xvec_transform.npz`），经 MacBook + `HF_ENDPOINT=https://hf-mirror.com` 的 `snapshot_download` 下载 33M 并用 tar 原样传回（保留 refs/snapshots 符号链接）恢复；离线加载验证通过（pipeline 3.1 / embedding / Silero VAD 全 OK）；③ **step2_download_models.sh 重写**——废弃 `huggingface-cli` 改 Python `snapshot_download`；pyannote 全部入 hub 缓存（speaker-diarization-3.1 / segmentation-3.0 / wespeaker / community-1 / embedding）；Qwen 保持自定义目录；Silero 预热固定 `torch.hub.set_dir(models/silero-vad)`（修掉旧版 TORCH_HOME 与 vad.py 目录不一致的隐患）；环境变量与 .env/settings.py 唯一口径（HF_HOME=models、HF_HUB_CACHE=models/hub）；④ 网络结论更新——hf-mirror 实测可用（HF_ENDPOINT），覆盖 v2.31/v2.35 旧结论；⑤ 部署验证：step2 同步 ThinkPad + 19 文件 md5 一致 + 离线加载实测通过 |
 | v2.47 | 2026-08-05 | **open_proxy 用法记录 + 残留目录清理与防护（§4.6 / db.py）**: ① **open_proxy 机制记录**——`~/.bashrc` 函数（open/close/restart/check_proxy），clash 内核 `~/Applications/clash-for-linux/`，端口 7890，`proxy_on` 导出 http(s)_proxy；脚本化无 sudo 场景继续用 hf-mirror/MacBook 中转；② **清理错误路径残留**——`/home/kevin/audio_archive`（settings 默认路径 + 未加载 .env 时 connect 制造，含 0 字节 transcripts.db）已删除，确认无其他默认路径残留（`~/audio_inbox`/`~/asr-local` 等均不存在），正确路径 `asr_sys_local/audio_archive` 不受影响；③ **复发防护**——`db.py::connect()` 在"无显式 db_path + 默认 `~/audio_archive` + 未设 ASR_ARCHIVE"时向 stderr 告警，替代静默制造残留；④ 部署验证：db.py 同步 ThinkPad + 19 文件 md5 一致 |
+| v2.48 | 2026-08-05 | **ASR 加载精度可配置 + 大文件 OOM 兜底（settings.py §3.4 / asr.py / 运维）**: ① **事件**——ThinkPad 处理 58.6 分钟大文件 `2026-08-04_14_07_26.wav` 两次被内核 OOM 杀死（WebUI 启动 11:02:59 峰值 14.6GB；standalone 13:30:54 峰值 14.96GB），均死在 ASR 转录阶段（FP32 模型 ~11.8GB + 波形/运行缓冲超出 16GB）；② **修复**——`ASR_CONFIG["torch_dtype"]` 支持环境变量 `ASR_TORCH_DTYPE` 覆盖（默认 `float32`，`bfloat16` 内存约减半），`asr.py` 三处加载统一走 `model_kwargs`；③ **恢复**——重置残留 status/锁，以 `ASR_TORCH_DTYPE=bfloat16` standalone 重启，VAD 拼接 58.6→5.2 分钟语音，内存可用 ~12GB 正常推进；④ **备注**——办公室网络（10.44.21.23）直连 huggingface.co 可达（302），家网不可达（hf-mirror 兜底）；定时脚本已改双 IP 尝试；⑤ 部署验证：asr.py/settings.py 两端 md5 一致，UI_VERSION 2026-08-05-15:15:05 |
 
 ---
 
