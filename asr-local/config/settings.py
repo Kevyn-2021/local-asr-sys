@@ -31,11 +31,16 @@ TIMEZONE             = "Asia/Shanghai"
 # 时间来源优先级（文件名优先，用户文件命名含精确时间戳，不受拷贝影响）
 TIME_SOURCE_PRIORITY = ["filename", "file_birthtime"]
 TIME_SOURCE_MISMATCH_THRESHOLD_SECONDS = 300   # 5 分钟
-# 文件名时间提取正则（按列表顺序尝试）
+# 文件名时间提取正则（按列表顺序尝试；re.search 不锚定，时间前后可带任意前缀/后缀）
 FILENAME_TIME_PATTERNS = [
-    r"(?P<Y>\d{4})[-_](?P<M>\d{2})[-_](?P<D>\d{2})[-_](?P<h>\d{2})[-_](?P<m>\d{2})[-_](?P<s>\d{2})", # 2026-08-02_19_30_25（用户主格式，分隔符可混用横线/下划线）
-    r"(?P<Y>\d{4})(?P<M>\d{2})(?P<D>\d{2})_(?P<h>\d{2})(?P<m>\d{2})(?P<s>\d{2})",   # recording_20260731_143052
-    r"(?P<Y>\d{4})(?P<M>\d{2})(?P<D>\d{2})T(?P<h>\d{2})(?P<m>\d{2})(?P<s>\d{2})",     # 20260731T143052Z
+    # 1) 长格式：六个字段，分隔符横线/下划线任意混用（v2.50 定稿）
+    #    2026-08-02_19_30_25 / meeting-2026-07-31-14-30-52 / 2026-07-31-14-30-52-meeting
+    r"(?P<Y>\d{4})[-_](?P<M>\d{2})[-_](?P<D>\d{2})[-_](?P<h>\d{2})[-_](?P<m>\d{2})[-_](?P<s>\d{2})",
+    # 2) 紧凑式：YYYYMMDD 与 HHMMSS 之间横线/下划线均可（v2.50 由 `_` 放宽为 `[-_]`）
+    #    recording_20260731_143052 / recording-20260731-143052 / 20260731_143052_recording
+    r"(?P<Y>\d{4})(?P<M>\d{2})(?P<D>\d{2})[-_](?P<h>\d{2})(?P<m>\d{2})(?P<s>\d{2})",
+    # 3) ISO 风格 T 分隔（兼容保留）：voice_note_20260731T143052Z
+    r"(?P<Y>\d{4})(?P<M>\d{2})(?P<D>\d{2})T(?P<h>\d{2})(?P<m>\d{2})(?P<s>\d{2})",
 ]
 ORGANIC_OUTPUT_FORMAT = "absolute"  # absolute | relative | both
 
