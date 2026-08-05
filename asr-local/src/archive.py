@@ -15,6 +15,7 @@ from config.settings import (
     ARCHIVE_TEXT_DIR,
     INBOX_ERROR_DIR,
     ORGANIC_OUTPUT_FORMAT,
+    SUPPORTED_EXTENSIONS,
 )
 from src.db import SegmentRow
 from src.utils.time_utils import BJT, fs_birth_time, organic_filename_for_archive
@@ -114,6 +115,12 @@ def archive_error_files() -> int:
     count = 0
     for f in sorted(INBOX_ERROR_DIR.iterdir()):
         if not f.is_file():
+            continue
+        # v2.54 修复：只归档"错误日志（.error.txt）+ 失败音频"，不再无差别移动
+        # error/ 根目录下的所有文件（曾把 README.txt 误当错误文件搬入 archived/ 并加时间戳改名）。
+        # 注意不能用 f.suffix == ".txt" 判断（复合后缀 .error.txt 的 suffix 只有 .txt，见 v2.17 坑）。
+        if not (f.name.endswith(".error.txt")
+                or f.suffix.lower() in SUPPORTED_EXTENSIONS):
             continue
         try:
             # 取文件创建时间作为时间戳（优先 statx btime，回退 mtime）
