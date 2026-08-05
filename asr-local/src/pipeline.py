@@ -313,7 +313,15 @@ class AsrPipeline:
                 transcript_path=None,
             ))
             if idx % 8 == 0:
-                gc.collect()  # v2.53：定期回收，缓解 CPU 内存池高水位堆积
+                # v2.53：定期回收，缓解 CPU 内存池高水位堆积
+                gc.collect()
+                # v2.56：把 glibc 空闲堆内存归还操作系统，避免 RSS 钉在高水位
+                # （实测长段 ASR 让 RSS 长期占满 16GB 导致 swap 假死）
+                try:
+                    import ctypes
+                    ctypes.CDLL("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
         self._unload_asr()
 
         if not rows:

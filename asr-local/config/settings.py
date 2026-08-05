@@ -103,13 +103,14 @@ ASR_CONFIG = {
     #   ASR_TORCH_DTYPE_BIG_S=<秒>              （自定义大文件阈值）
     "torch_dtype":       os.environ.get("ASR_TORCH_DTYPE", "auto"),
     "torch_dtype_big_s": float(os.environ.get("ASR_TORCH_DTYPE_BIG_S", "1800")),
-    # v2.53：ASR 段合并——逐段固定开销（特征提取+解码启动+最多 512 token 生成）远大于内容转录，
-    # 段数越多越慢；合并相邻短段直接砍段数，段长设上限以约束单段峰值内存
-    # （torch CPU 内存池不归还峰值，曾见单文件 ASR 内存从 5.3GB 涨到 14GB）。
+    # v2.53/v2.56：ASR 段合并——逐段固定开销远大于内容转录，段数越多越慢，合并相邻短段砍段数；
+    # 段长上限是关键：单段越长，生成 token 越多、解码越慢、内存工作集越大（实测 bf16 下 60s 段
+    # 单段约 6 分钟，进程 RSS 钉在 ~14.7GB，16GB 机器满内存+swap 假死）。
+    # v2.56 默认上限 15s：峰值内存与单段耗时都大幅下降，5.2 分钟语音可 10-20 分钟完成。
     #   间隔 ≤ segment_merge_gap_s 的相邻段合并；合并后段长不超过 segment_max_s。
     #   环境变量可覆盖：ASR_SEGMENT_MERGE_GAP_S / ASR_SEGMENT_MAX_S
     "segment_merge_gap_s": float(os.environ.get("ASR_SEGMENT_MERGE_GAP_S", "1.5")),
-    "segment_max_s":       float(os.environ.get("ASR_SEGMENT_MAX_S", "60.0")),
+    "segment_max_s":       float(os.environ.get("ASR_SEGMENT_MAX_S", "15.0")),
 }
 
 # ---------- 内存编排 (PRD 5.1.1) ----------
