@@ -1211,8 +1211,12 @@ def render_access_control():
                             st.markdown(html.escape(r["comment"]) or "—")
                         with col_op:
                             if r["fixed"]:
-                                st.caption("固定")
-                            elif st.button("移除", key=f"fw_rm_{r['ip']}"):
+                                # v2.71：与「移除」按钮同宽居中，避免纵向错位（按钮偏向右侧）
+                                st.markdown(
+                                    "<div style='text-align:center;color:var(--fg-3);font-size:0.8rem;'>固定</div>",
+                                    unsafe_allow_html=True,
+                                )
+                            elif st.button("移除", key=f"fw_rm_{r['ip']}", use_container_width=True):
                                 ok, msg = _fw_apply("remove", r["ip"])
                                 if ok:
                                     st.success(msg)
@@ -1485,7 +1489,7 @@ elif page == "处理记录":
     sp_map = speaker_display_map()  # unknown_XXXX → 标注姓名
     audios = get_audio_records()    # 按音频聚合，按源音频时间从远到近
 
-    c = panel("音频处理记录", "按处理过的音频罗列；编号按源音频时间从远到近（最远 = 1），不再拆分片段")
+    c = panel("音频处理记录", "按处理过的音频罗列；编号按源音频时间从远到近（最远 = 1）")
     with c:
         if not audios:
             st.info("暂无处理记录")
@@ -1565,7 +1569,7 @@ elif page == "数据库":
 
     # ── 声纹簇标注（v2.68 重构）：筛选说话人 → 查看发言 → 直接标注 ──
     # 原「处理记录」页的说话人筛选功能并入此处；替代旧的三段式 tab（ID/编号/样本数对用户无意义）。
-    c = panel("声纹簇 · 标注学习", "筛选说话人 → 查看他说过的话 → 直接标注（原「处理记录」页说话人筛选已并入）")
+    c = panel("声纹簇 · 标注学习", "筛选说话人 → 查看他说过的话 → 直接标注")
     with c:
         sp_map = speaker_display_map()
         clusters = list_clusters_view()
