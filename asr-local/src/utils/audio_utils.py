@@ -35,6 +35,7 @@ def _to_mono_float32(y: np.ndarray) -> np.ndarray:
 def load_audio(path: Path, *, target_sr: int = TARGET_SR) -> AudioLoad:
     """优先 soundfile；失败回退 pydub 解码 (ffmpeg)；返回 shape (1, T) 的 torch CPU tensor。"""
     path = Path(path)
+    data = None  # v2.59：pydub 回退分支不产生 data，结尾 del 需判空（曾 UnboundLocalError 致 m4a 全部加载失败）
     try:
         data, sr = sf.read(str(path), always_2d=False, dtype="float32")
         mono = _to_mono_float32(data)
@@ -62,7 +63,9 @@ def load_audio(path: Path, *, target_sr: int = TARGET_SR) -> AudioLoad:
     T = torch.from_numpy(mono).unsqueeze(0).contiguous()  # (1, T)
     dur = float(T.shape[1]) / float(sr)
     # 释放 numpy 中间变量，降低 15W CPU 下的内存压力
-    del mono, data
+    del mono
+    if data is not None:
+        del data
     gc.collect()
     return AudioLoad(waveform=T, sample_rate=sr, duration_s=dur, original_path=path)
 

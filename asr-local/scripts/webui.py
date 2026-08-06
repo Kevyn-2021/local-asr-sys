@@ -56,7 +56,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-06-12:00:22"
+UI_VERSION = "2026-08-06-12:18:16"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）

@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.58  
+**版本**: v2.59  
 **日期**: 2026-08-04  
 **状态**: 持续更新
 
@@ -512,6 +512,7 @@ def move_to_error(src: Path, reason: str = "") -> None:
 
 ### 4.4 文件处理相关
 - **文件创建时间**：跨平台拷贝后文件创建时间可能变为拷贝时刻，因此时间戳提取以文件名优先，不依赖文件系统元数据。
+- **pydub 回退分支 `del` 未定义变量（v2.59 实战修复）**：`load_audio()` 优先 soundfile，失败走 pydub/ffmpeg 回退——回退分支不产生 `data`，但函数结尾 `del mono, data` 直接引用了未定义的 `data`，抛 `UnboundLocalError: cannot access local variable 'data'`，导致 **m4a（及 soundfile 不支持的 mp3）全部加载失败**。修复：`data = None` 初始化 + `if data is not None: del data`。
 - **文件名时间戳格式（v2.50 定稿，PRD FR-001-TS / §3.5 / settings.py 三处一致）**：按顺序尝试 ① 长格式 `YYYY-MM-DD_时_分_秒`（六个字段分隔符 `[-_]` 任意混用，如 `meeting-2026-07-31-14-30-52`）② 紧凑式 `YYYYMMDD[-_]HHMMSS`（如 `recording_20260731_143052`、`recording-20260731-143052`、`20260731-143052-recording`）③ ISO `YYYYMMDDTHHMMSS`（如 `voice_note_20260731T143052Z`）；时间前后可带任意前缀/后缀。
 - **watchdog 已禁用**：因无法可靠检测子文件夹和拷贝过程中的竞态，改为手动触发处理。
 - **`Path.suffix` 陷阱（v2.17）**：`Path("a.error.txt").suffix` 只返回最后一个后缀 `.txt`，**不等于** `.error.txt`。用 `f.suffix != ".error.txt"` 判断永远为真，导致匹配不到任何文件。匹配复合后缀必须用 `f.name.endswith(".error.txt")`。`archive_error_files()` 与 `count_error_files()` 均因此失效过一次。
@@ -706,6 +707,7 @@ MEMORY_CONFIG = {
 | v2.56 | 2026-08-05 | **ASR 段长上限收紧 60s→15s + malloc_trim 内存归还（settings.py §3.4 / pipeline.py）**: ① **实测教训**——58.6 分钟文件（分离仅 17 段、合并 15 段）bf16 长段解码极慢（60s 段 ≈ 6 分钟/段，总 ASR 92 分钟），且长段工作集使 RSS 从一开始就钉在 ~14.7GB，16GB 机器满内存+swap 假死（第三次终止）；② **修正**——`segment_max_s` 默认 60s→**15s**（单段生成 token 骤减、峰值内存与耗时双降）；每 8 段 `gc.collect()` 后调 **`malloc_trim(0)`** 归还空闲堆给 OS；③ 预期：5.2 分钟语音 10-20 分钟完成、RSS 峰值显著下降；④ 终止恢复：第三次终止假死进程（TERM 未响应→KILL+重置 status/锁），收件箱文件保留；⑤ 部署验证：pipeline.py/settings.py 两端 md5 一致 |
 | v2.57 | 2026-08-05 | **分离段裁剪回真实语音（根因修复，diarization.py §3.2）**: ① **根因定位（受控实验）**——ASR 循环本身零内存增长（50+ 段实测 RSS 稳定 4.7GB、无泄漏）；真凶是**分离段横跨静音**：VAD 拼接轴上同一说话人的多个语音片断被并成一段，映射回原时间轴后把中间静音一起包进来（58.6 分钟文件：VAD 语音 5.2 分钟，但分离 17 段、最大 1336.7s、段总时长 3104.8s）；ASR 把含静音的整段送去转录 → 内存钉满 14GB + 耗时数小时；② **修复**——`Diarizer.run()` 映射回原轴后，与 VAD 语音片断**取交集裁剪**（>0.05s 保留），再合并相邻同说话人短段（间隔 ≤ `merge_gap_s`）；③ **验证**——同文件重跑：17 段 → 72 段（真实片断）、最长段 1336.7s → **35.7s**、段总时长 3104.8s → **325.7s**（≈VAD 语音量级）；④ 附带收益——声纹聚合只使用真实语音；⑤ 部署验证：diarization.py 同步 + md5 一致，UI_VERSION 2026-08-05-22:43:53 |
 | v2.58 | 2026-08-06 | **ASR 精度决策升级：按"可用内存 + 语音时长"（settings.py §3.4 / pipeline.py）**: ① 原规则（v2.49）按**音频总时长 ≥30 分钟**切 bf16——粗糙代理；升级为**决策时刻 `/proc/meminfo MemAvailable` ≥ `fp32_min_avail_mb`（默认 13500MB）且 VAD 语音总量 ≤ `fp32_max_speech_s`（默认 1800s）→ FP32**，否则 bf16；② 依据——v2.57 语音裁剪后 ASR 峰值主要由模型决定（FP32 ~12-13GB / bf16 ~5.5GB），与文件大小/总时长弱相关，故"可用内存 + 已知语音量"更精准（内存足、语音少 → 快跑 FP32；内存紧或语音超长 → bf16 保稳）；③ 新增 `_available_mem_mb()`（Linux MemAvailable 读取，失败保守走 bf16），决策日志带可用内存与语音/音频分钟数；④ 决策逻辑本地单测 4 组合全过；⑤ 五端协同——PRD/TDD/SEC/代码/运行节点同步（SEC 无敏感信息变化无需改）；⑥ 生产实测：收件箱 11 个真实文件直接跑，观测每文件精度选择/内存/耗时后微调阈值 |
+| v2.59 | 2026-08-06 | **m4a 音频加载修复（audio_utils.py §4.4，实战发现）**: ① **现象**——11 文件实战批处理第一个 m4a 即失败：`加载失败: cannot access local variable 'data'`；② **根因**——`load_audio()` 的 pydub/ffmpeg 回退分支不产生 `data`，函数结尾 `del mono, data` 引用未定义变量 → UnboundLocalError，影响所有 soundfile 不支持的格式（m4a 必中，部分 mp3 可能）；③ **修复**——`data = None` 初始化 + 判空释放；④ 处理——终止旧批、恢复失败文件回收件箱、修复后重启全部 11 个；⑤ 部署验证：audio_utils.py 远端含修复 + md5 一致，UI_VERSION 2026-08-06-12:18:16 |
 | v2.49 | 2026-08-05 | **ASR 精度默认改为 auto 动态分配（settings.py §3.4 / asr.py / pipeline.py）**: ① **默认 `auto`**——`pipeline.process_file` 按音频时长决策：≥1800s（30 分钟，可配 `ASR_TORCH_DTYPE_BIG_S`）→ bf16，否则 FP32；以 `torch_dtype` 参数传入 `QwenAsr`（不再只依赖环境变量）；② **asr.py**——构造函数新增 `torch_dtype` 参数（None 时读 settings，`auto` 兜底为 float32）；③ **pipeline.py**——第 (7) 步决策并记录 `[pipeline] ASR 精度决策：X（音频 Y 分钟）`；④ 阈值依据：FP32 成功最大 23.6 分钟、OOM 最小 58.6 分钟，30 分钟留余量；⑤ 部署验证：asr.py/pipeline.py/settings.py 两端 md5 一致 |
 | v2.50 | 2026-08-05 | **文件名时间提取格式三处统一（settings.py §3.5 / PRD FR-001-TS / TDD §3.5、§4.4）**: ① **实现修正**——紧凑式正则 `YYYYMMDD_HHMMSS` 的日期-时间分隔符由 `_` 放宽为 `[-_]`：新增识别 `recording-20260731-143052`、`20260731-143052-recording`（此前只能下划线）；② **文档统一**——PRD「支持的文件名格式」与 TDD §3.5 正则/§4.4 描述改为同一清单：长格式（六个字段 `[-_]` 任意混用，可带前后缀）/ 紧凑式（`[-_]` 均可，可带前后缀）/ ISO `YYYYMMDDTHHMMSS`；`re.search` 不锚定；③ 验证：8 种格式（含 7 种建议 + ISO）全部正确提取，无匹配样例（无时间数字串）正确返回 None |
 
