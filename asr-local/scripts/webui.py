@@ -59,7 +59,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-06-15:17:55"
+UI_VERSION = "2026-08-06-15:43:53"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）
@@ -170,9 +170,13 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] {
     margin-left: 0.75rem;   /* 导航整体往右一点点（v2.41） */
     display: flex; flex-wrap: wrap;   /* v2.62：文字自适应宽度；窄窗口自动折行 */
+    gap: 6px;   /* v2.63：页签之间间隙加大 */
 }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button {
     cursor: pointer; flex: 0 0 auto; min-width: 0;   /* v2.62：宽度随文字内容，不拉伸等宽 */
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;   /* v2.63：页签整体加宽 */
+    letter-spacing: 0.02em;   /* v2.63：字间距稍微加大 */
 }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"],
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"] * {
@@ -1137,22 +1141,32 @@ def render_access_control():
         else:
             if not rules:
                 st.info("当前白名单为空（仅 Tailscale 设备可访问）。")
-            for r in rules:
-                col_ip, col_desc, col_op = st.columns([1.2, 3.2, 1])
-                with col_ip:
-                    st.markdown(f"<code>{html.escape(r['ip'])}</code>", unsafe_allow_html=True)
-                with col_desc:
-                    st.markdown(html.escape(r["comment"]) or "—")
-                with col_op:
-                    if r["fixed"]:
-                        st.caption("固定")
-                    elif st.button("移除", key=f"fw_rm_{r['ip']}"):
-                        ok, msg = _fw_apply("remove", r["ip"])
-                        if ok:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-                        st.rerun()
+            else:
+                # 固定放行项置顶、设备白名单（可新增/移除）置底（v2.63）
+                for group_label, group_rules in (
+                    ("固定放行（不可删除）", [r for r in rules if r["fixed"]]),
+                    ("设备白名单（可新增/移除）", [r for r in rules if not r["fixed"]]),
+                ):
+                    if not group_rules:
+                        continue
+                    st.markdown(f"**{group_label}**")
+                    for r in group_rules:
+                        col_ip, col_desc, col_op = st.columns([1.2, 3.2, 1])
+                        with col_ip:
+                            st.markdown(f"<code>{html.escape(r['ip'])}</code>", unsafe_allow_html=True)
+                        with col_desc:
+                            st.markdown(html.escape(r["comment"]) or "—")
+                        with col_op:
+                            if r["fixed"]:
+                                st.caption("固定")
+                            elif st.button("移除", key=f"fw_rm_{r['ip']}"):
+                                ok, msg = _fw_apply("remove", r["ip"])
+                                if ok:
+                                    st.success(msg)
+                                else:
+                                    st.error(msg)
+                                st.rerun()
+                    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
             st.divider()
             st.markdown("**新增白名单 IP**")
             col_ip, col_desc, col_btn = st.columns([1.4, 2.2, 1], vertical_alignment="center")
