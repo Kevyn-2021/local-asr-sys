@@ -95,17 +95,20 @@ ASR_CONFIG = {
     "language":          "zh",
     "return_timestamps": True,
     # v2.58：加载精度默认 "auto"——按"决策时可用内存 + 语音时长"动态分配：
-    #   可用内存 >= fp32_min_avail_mb（默认 13500MB = 13.5GB）且 语音时长 <= fp32_max_speech_s（默认 1800s = 30 分钟）
+    #   可用内存 >= fp32_min_avail_mb（默认 12000MB = 12GB，v2.65 由 13500 微调）且 语音时长 <= fp32_max_speech_s（默认 1800s = 30 分钟）
     #       → float32（oneDNN 优化 1.11× 实时，峰值 ~12-13GB）
     #   否则 → bfloat16（内存约减半、3.14× 实时，稳定兜底）
     # 判断依据：v2.57 语音裁剪后单段工作集已压小，ASR 峰值主要取决于模型本身（与文件大小/总时长相关性弱），
     # 所以用"决策时刻的 MemAvailable + VAD 语音总量"比 v2.49 的"音频总时长 ≥30 分钟"更精准。
+    # v2.65 实测微调：16GB 机器（仅跑本任务）决策时可用内存稳定 12.7-13.3GB，原阈值 13.5GB 永不触发
+    #   → auto 全部走 bf16（8 分钟语音 ASR 实测 ~57 分钟，约 7-8× 实时）；下调至 12000MB 后稳定触发 FP32
+    #   （峰值 ~12-13GB，留 ~1GB 余量）；可用内存低于阈值时仍自动回退 bf16，安全兜底不变。
     # 可用环境变量覆盖：
     #   ASR_TORCH_DTYPE=float32|bfloat16|auto
     #   ASR_FP32_MIN_AVAIL_MB=<MB>      （FP32 所需最小可用内存）
     #   ASR_FP32_MAX_SPEECH_S=<秒>      （FP32 允许的最大语音时长）
     "torch_dtype":          os.environ.get("ASR_TORCH_DTYPE", "auto"),
-    "fp32_min_avail_mb":    float(os.environ.get("ASR_FP32_MIN_AVAIL_MB", "13500")),
+    "fp32_min_avail_mb":    float(os.environ.get("ASR_FP32_MIN_AVAIL_MB", "12000")),
     "fp32_max_speech_s":    float(os.environ.get("ASR_FP32_MAX_SPEECH_S", "1800")),
     # v2.53/v2.56：ASR 段合并——逐段固定开销远大于内容转录，段数越多越慢，合并相邻短段砍段数；
     # 段长上限是关键：单段越长，生成 token 越多、解码越慢、内存工作集越大（实测 bf16 下 60s 段
