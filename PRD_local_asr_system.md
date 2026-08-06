@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v2.66  
+**版本**: v2.67  
 **日期**: 2026-08-06  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -274,6 +274,8 @@
   | `archive_name` | TEXT | 归档后的有机文件名 (FR-001-AR) |
   | `recording_start_time` | TIMESTAMP | **录音开始绝对时间** (ISO 8601) |
   | `processed_at` | TIMESTAMP | 处理完成时间 |
+  | `processing_started_at` | TIMESTAMP | 该音频开始处理时间（v2.67，成功文件写入） |
+  | `processing_completed_at` | TIMESTAMP | 该音频处理完成时间（v2.67，成功文件写入） |
   | `segment_start_offset` | REAL | 片段开始偏移 (秒，相对于音频起点) |
   | `segment_end_offset` | REAL | 片段结束偏移 (秒) |
   | `absolute_start_time` | TIMESTAMP | **绝对开始时间** (应用层计算，见 7.1) |
@@ -519,6 +521,8 @@ CREATE TABLE transcripts (
     -- ====== 时间戳核心字段 ======
     recording_start_time    TEXT NOT NULL,           -- 录音开始绝对时间 (ISO 8601, +08:00)
     processed_at            TEXT NOT NULL,           -- 处理完成时间 (ISO 8601)
+    processing_started_at   TEXT,                    -- v2.67：该音频开始处理时间（成功文件写入）
+    processing_completed_at TEXT,                    -- v2.67：该音频处理完成时间（成功文件写入）
 
     -- 片段偏移 (相对于音频起点，秒)
     segment_start_offset    REAL NOT NULL,           -- 片段开始偏移
@@ -704,7 +708,7 @@ END;
 | 音频数量（首页"处理成果"） | `SELECT COUNT(DISTINCT file_hash) FROM transcripts`（按去重音频文件数，与归档音频数一致） |
 | 累计转录片段数（处理记录页"共 N 条"） | `SELECT COUNT(*) FROM transcripts` |
 | 累计音频总时长（秒，首页换算小时显示） | `SELECT COALESCE(SUM(d),0) FROM (SELECT MAX(audio_duration) AS d FROM transcripts GROUP BY file_hash)`（audio_duration 存的是整文件时长且每个片段行重复，须按文件去重后再求和） |
-| 最近处理记录 | `SELECT ... ORDER BY processed_at DESC LIMIT 5` |
+| 音频处理记录（页 2，按音频聚合） | `SELECT file_hash, MIN(recording_start_time), MAX(audio_duration), MIN(COALESCE(processing_started_at,'')), MAX(COALESCE(processing_completed_at, processed_at)) ... FROM transcripts GROUP BY file_hash ORDER BY MIN(recording_start_time)`（v2.67：按音频罗列，编号按源音频时间从远到近） |
 
 #### 8.1.3 声纹库信息（来源：SQLite 数据库 `voiceprints` / `speaker_clusters` / `persons` 表）
 
@@ -860,13 +864,11 @@ END;
 
 #### 页 2 — 处理记录
 
-回答：**"过去处理了哪些文件？最近处理了啥？"**
+回答：**"处理了哪些音频？每个音频转写出了什么？"**
 
-- 面板 1「最近处理」：最新 5 条转录片段（时间、源文件、说话人、时长 + 摘要），自概览页迁入本页顶部
-- 面板 2「筛选条件」：日期范围 + 说话人两个筛选器
-- 面板 3「片段记录」：记录表格（ID、源文件、说话人、时长、开始时间、处理完成），面板说明实时显示条数
-- 面板 4「片段详情」：选一条记录看详情——转录文本用灰底引用块突出，附绝对时间区间、音频回放
-- **说话人列显示规则**：本页所有说话人（最近处理、片段记录、片段详情）显示**标注后的姓名**——`unknown_XXXX` 编号经 `speaker_clusters.assigned_name` 显示层映射为姓名，未标注的仍显示原编号；数据库 `transcripts.speaker` 原文不动（见 §8.1.4）
+- 面板 1「音频处理记录」（v2.67 重构）：按**处理过的音频**罗列（不再按片段 ID 拆分，无说话人列）；**编号**按源音频时间从远到近、从 1 开始（显示层稳定编号，最远 = 1）；列：编号 / 源文件 / 时长(min) / 源音频开始时间 / 源音频结束时间 / 开始处理时间 / 处理完成时间（时间格式 `YYYY-MM-DD HH:MM`，不含秒；旧记录无起止时间字段时，完成时间回退 `processed_at`、开始时间显示 "—"）
+- 面板 2「音频处理详情」（v2.67 重构）：**按音频编号**选择，展示该音频的源文件名、源音频起止时间、**整段音频回放**与**完整转写文本**（每行 `[绝对时间起 - 止] 说话人：文本`，说话人显示标注后的姓名）——不再按片段切分播放，用户按文本时间戳自行拖动定位
+- **说话人显示规则**：本页说话人显示**标注后的姓名**——`unknown_XXXX` 编号经 `speaker_clusters.assigned_name` 显示层映射为姓名，未标注的仍显示原编号；数据库 `transcripts.speaker` 原文不动（见 §8.1.4）
 
 #### 页 3 — 数据库
 
@@ -1091,6 +1093,7 @@ $ bash run.sh
 | v2.64 | 2026-08-06 | **导航去缝隙 + 白名单行对齐（FR-008 / FR-008-A）**: ① 移除页签之间 gap（恢复分段控件连续外观），tab 内部文字字距微调至 0.05em（此前 0.02em）；② 「访问控制」页白名单每行「移除」按钮与左侧 IP/描述垂直居中对齐；工程细节见 [TDD v2.64](./TDD_local_asr_system.md#6-变更日志) |
 | v2.65 | 2026-08-06 | **ASR FP32 阈值按实测微调（FR-004）**: ① 实战发现——16GB 机器（仅跑本任务）决策时可用内存稳定 12.7-13.3GB，默认阈值 13.5GB **永不触发**，auto 全部走 bf16（8 分钟语音 ASR 实测 ~57 分钟、约 7-8× 实时）；② `fp32_min_avail_mb` 默认 **13500→12000MB**——FP32 峰值 ~12-13GB、留 ~1GB 余量，低于阈值仍自动回退 bf16（安全兜底不变）；③ 11 文件批处理实测：bf16 每段 91-126 秒（与 TDD v2.53 记录吻合），切 FP32 预期 2.5-3× 提速；工程细节见 [TDD v2.65](./TDD_local_asr_system.md#6-变更日志) |
 | v2.66 | 2026-08-06 | **解除 ASR 语音时长限制 + 卸载归还内存（FR-004）**: ① **解除 v2.49 遗留的"语音 ≤30 分钟"上限**——语音裁剪（v2.57）+ 段长封顶（v2.56）后 ASR 峰值由模型本身决定、与语音总量弱相关，精度决策只保留内存护栏（可用内存 ≥12GB → FP32，否则 bf16）；② **阶段卸载归还内存**——`_unload_asr`/`_unload_diar` 增加 `malloc_trim`（实测 FP32 卸载后 torch CPU 池滞留 ~2GB，导致下一文件决策可用内存虚低而误走 bf16）；③ 部署验证：终止旧批重启，首文件 FP32 决策生效；工程细节见 [TDD v2.66](./TDD_local_asr_system.md#6-变更日志) |
+| v2.67 | 2026-08-06 | **「处理记录」页重构为按音频维度（FR-008 / §8.2 页 2）**: ① 移除「最近处理」「筛选条件」，页 2 只保留两个面板——「音频处理记录」（按音频聚合罗列，无说话人列，列：编号/源文件/时长(min)/源音频开始/结束时间/开始处理/完成处理时间，时间格式不含秒；编号按源音频时间从远到近从 1 开始）与「音频处理详情」（按音频编号选择，展示完整转写文本 + 整段音频回放，不再按片段切分）；② `transcripts` 新增 `processing_started_at`/`processing_completed_at` 两列（v2.67 起写入，旧记录完成时间回退 `processed_at`、开始时间显示 "—"）；工程细节见 [TDD v2.67](./TDD_local_asr_system.md#6-变更日志) |
 
 ---
 

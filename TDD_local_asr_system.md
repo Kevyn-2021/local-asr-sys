@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.66  
+**版本**: v2.67  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -722,6 +722,7 @@ MEMORY_CONFIG = {
 | v2.64 | 2026-08-06 | **导航去缝隙 + 白名单行对齐（webui.py §4.7 / PRD FR-008-A）**: ① 移除 radiogroup 的 `gap:6px`（页签恢复无缝连续外观，实测相邻按钮间距 -1px≈0）；tab 内文字 `letter-spacing` 0.02em→**0.05em**（实测 0.7px），宽度仍 109/94px；② 白名单每行改 `st.columns([1.2, 3.2, 1], vertical_alignment="center")`——实测「移除」按钮与左侧 IP 中心 Y 完全一致（diff=0）；③ 验证：headless Chrome 实测宽度/缝隙/字距/按钮对齐，UI_VERSION 2026-08-06-16:01:55 |
 | v2.65 | 2026-08-06 | **ASR FP32 阈值按实测微调（settings.py §3.4 / PRD FR-004）**: ① 实战发现——16GB 机器（仅跑本任务）决策时可用内存稳定 12.7-13.3GB，`fp32_min_avail_mb` 默认 13500MB **永不触发**，auto 全部走 bf16；11 文件批处理实测：ASR 阶段 8 分钟语音文件 ~57 分钟、18 分钟语音文件 ~107 分钟（约 7-8× 实时），bf16 每段 91-126 秒（与 v2.53 记录 62-99s/段同量级）；② `fp32_min_avail_mb` 默认 **13500→12000MB**——FP32 峰值 ~12-13GB（v2.32/v2.58 实测）、决策时可用内存稳定 ≥12.7GB，留 ~1GB 余量；可用内存低于阈值仍自动回退 bf16；③ 决策时机说明——精度决策发生在音频加载/VAD/分离/声纹引擎之后，MemAvailable 已扣掉该音频的波形占用，音频越大天然越保守；④ 部署验证：settings.py 两端 md5 一致，终止旧批重启生效 |
 | v2.66 | 2026-08-06 | **解除 ASR 语音时长限制 + 卸载归还内存（settings.py §3.4 / pipeline.py §2.4 / PRD FR-004）**: ① **解除"VAD 语音总量 ≤1800s"限制**——删除 `fp32_max_speech_s` 配置与决策条件（v2.57 裁剪 + v2.56 段长封顶后 ASR 峰值由模型决定、与语音总量弱相关，内存检查即唯一护栏；语音总量只影响耗时）；② **卸载归还内存**——新增模块级 `_malloc_trim()` 并在 `_unload_asr`/`_unload_diar` 卸载后调用（ASR 循环内每 8 段既有调用改为复用）；实测 FP32 卸载后 torch CPU 池滞留 ~2GB、下一文件决策可用内存虚低（10.7GB）误走 bf16，修复后重启首文件恢复 float32（12908MB）；③ 五端协同——PRD/TDD/SEC/代码/运行节点同步（SEC 无敏感信息变化无需改）；④ 部署验证：pipeline.py/settings.py 两端 md5 一致，终止旧批重启生效 |
+| v2.67 | 2026-08-06 | **「处理记录」页重构为按音频维度（db.py §PRD7.1 / pipeline.py / webui.py §PRD8.2 页2）**: ① **db.py**——`transcripts` 新增 `processing_started_at`/`processing_completed_at` 两列（SCHEMA_SQL + init_db ALTER TABLE 老库迁移），`SegmentRow` 与 `insert_segments` 同步；② **pipeline.py**——`process_file` 开头记录开始处理时间，归档+文本备份成功后、入库前回填完成处理时间；③ **webui.py**——页 2 移除「最近处理」「筛选条件」「片段记录/片段详情」四面板，改为两面板：「音频处理记录」（`get_audio_records()` 按 file_hash 聚合、按源音频时间从远到近，显示层编号 1..N，列：编号/源文件/时长(min)/源音频起止时间/开始处理/完成处理时间，`fmt_dt_no_sec` 不含秒；旧记录完成时间回退 processed_at、开始时间显示 —）与「音频处理详情」（`get_audio_segments()` 取该音频全部片段，按绝对时间升序渲染 `[起 - 止] 说话人：文本`，说话人经显示层映射；`render_full_audio()` 整段回放替代按片段切分）；④ 删除页 2 专用的 `get_all_records()`（搜索页的 `render_segment_audio` 保留）；⑤ 部署验证：webui.py/db.py/pipeline.py 三端 md5 一致，webui 重启后老库自动迁移 |
 
 ---
 

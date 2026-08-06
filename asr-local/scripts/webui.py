@@ -678,27 +678,31 @@ def apply_cluster_label(cluster_id: int, target: str | None) -> tuple[int, int]:
     return n_db, n_txt
 
 
-def get_all_records(limit: int = 200, date_from: str = "", date_to: str = "",
-                    speakers: list[str] | None = None) -> list[dict]:
+def get_audio_records() -> list[dict]:
+    """按音频（file_hash 去重）聚合的处理记录（v2.67「音频处理记录」）。
+    按源音频开始时间从远到近排序（显示层编号 1 = 最远）。
+    旧记录（v2.67 前入库，无起止时间字段）：完成时间回退 processed_at，开始时间显示 —。"""
     with connect() as conn:
-        sql = ("SELECT id, source_file, archive_name, speaker, "
-               "segment_start_offset, segment_end_offset, absolute_start_time, "
-               "absolute_end_time, processed_at, audio_duration, text, confidence, "
-               "audio_path, transcript_path FROM transcripts WHERE 1=1")
-        params: list = []
-        if date_from:
-            sql += " AND absolute_start_time >= ?"
-            params.append(date_from)
-        if date_to:
-            sql += " AND absolute_start_time <= ?"
-            params.append(date_to)
-        if speakers:
-            ph = ",".join("?" * len(speakers))
-            sql += f" AND speaker IN ({ph})"
-            params.extend(speakers)
-        sql += " ORDER BY absolute_start_time DESC LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
+        rows = conn.execute(
+            "SELECT file_hash, source_file, archive_name, "
+            "MIN(recording_start_time) AS recording_start_time, "
+            "MAX(audio_duration) AS audio_duration, "
+            "MIN(processed_at) AS processed_at, "
+            "MIN(COALESCE(processing_started_at, '')) AS processing_started_at, "
+            "MAX(COALESCE(processing_completed_at, processed_at)) AS processing_completed_at, "
+            "MAX(audio_path) AS audio_path "
+            "FROM transcripts GROUP BY file_hash "
+            "ORDER BY MIN(recording_start_time) ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_audio_segments(file_hash: str) -> list[dict]:
+    """某音频（file_hash）的全部转写片段，按绝对开始时间升序（v2.67 详情页）"""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, absolute_start_time, absolute_end_time, speaker, text "
+            "FROM transcripts WHERE file_hash=? ORDER BY absolute_start_time ASC",
+            (file_hash,)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -931,6 +935,29 @@ def fmt_full_time(iso: str | None) -> str:
         return iso[:19]
 
 
+def fmt_dt_no_sec(iso: str | None) -> str:
+    """`YYYY-MM-DD HH:MM`（不含秒），供「音频处理记录」时间列使用（v2.67）"""
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso[:16]
+
+
+def _audio_end_time(start_iso: str | None, duration_s: float | None) -> str:
+    """源音频结束时间 = 录音开始时间 + 音频总时长（v2.67）"""
+    if not start_iso or duration_s is None:
+        return ""
+    try:
+        return (datetime.fromisoformat(start_iso) + timedelta(seconds=duration_s)).isoformat()
+    except Exception:
+        return ""
+
+
 def fmt_elapsed(iso: str | None) -> str:
     """计算从 iso 时间到现在的耗时，返回人性化字符串"""
     if not iso:
@@ -1076,6 +1103,18 @@ def render_segment_audio(row: dict):
             st.warning("无法加载音频片段")
     else:
         st.info("该片段无对应音频文件")
+
+
+def render_full_audio(a: dict):
+    """整段音频回放（v2.67 详情页）：不按片段切分，用户按文本时间戳自行拖动"""
+    p = a.get("audio_path")
+    if p and Path(p).exists():
+        try:
+            st.audio(str(p))
+        except Exception:
+            st.warning("无法加载音频")
+    else:
+        st.info("该音频无对应文件")
 
 
 # ========== 访问控制辅助 ==========
@@ -1429,79 +1468,66 @@ if page == "状态概览":
 # ================================================================
 elif page == "处理记录":
     sp_map = speaker_display_map()  # unknown_XXXX → 标注姓名
-    c = panel("最近处理", "最新 5 条转录片段")
-    with c:
-        recent = get_recent_records(5)
-        if recent:
-            items_html = []
-            for r in recent:
-                t = fmt_time(r["processed_at"])
-                dur = f"{r['audio_duration']:.0f}s" if r.get("audio_duration") else "—"
-                who = disp_speaker(str(r["speaker"]), sp_map)
-                items_html.append(
-                    f"<div class='list-item'>"
-                    f"<span class='t'>{t}</span>&nbsp;&nbsp;<span class='f'>{html.escape(str(r['source_file']))}</span>"
-                    f"<span class='m'>　{html.escape(who)}　{dur}</span>"
-                    f"<div class='x'>{clean_text(r['text'], 60)}</div></div>"
-                )
-            st.markdown("".join(items_html), unsafe_allow_html=True)
-        else:
-            st.markdown("<span style='color:var(--fg-3);'>暂无记录</span>",
-                        unsafe_allow_html=True)
+    audios = get_audio_records()    # 按音频聚合，按源音频时间从远到近
 
-    c = panel("筛选条件", "按日期范围和说话人过滤")
+    c = panel("音频处理记录", "按处理过的音频罗列；编号按源音频时间从远到近（最远 = 1），不再拆分片段")
     with c:
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            dr = st.date_input("日期范围", value=(
-                datetime.now() - timedelta(days=30), datetime.now() + timedelta(days=1)))
-        with c2:
-            sp_map = speaker_display_map()
-            raw_speakers = get_speaker_list()
-            display_to_raws: dict[str, list[str]] = {}
-            seen: set[str] = set()
-            display_speakers: list[str] = []
-            for s in raw_speakers:
-                d = disp_speaker(s, sp_map)
-                display_to_raws.setdefault(d, []).append(s)
-                if d not in seen:
-                    seen.add(d)
-                    display_speakers.append(d)
-            sp_display = st.selectbox("说话人", [""] + display_speakers)
-            sp_list = display_to_raws.get(sp_display) if sp_display else None
-        date_from = dr[0].isoformat() if isinstance(dr, tuple) else ""
-        date_to = dr[1].isoformat() if isinstance(dr, tuple) else ""
-
-    records = get_all_records(date_from=date_from, date_to=date_to, speakers=sp_list)
-
-    c = panel("片段记录", f"共 {len(records)} 条")
-    with c:
-        if not records:
+        if not audios:
             st.info("暂无处理记录")
         else:
-            df = pd.DataFrame(records)
-            df["说话人"] = df["speaker"].map(lambda s: disp_speaker(str(s), sp_map))
-            view = df[["id", "source_file", "说话人", "audio_duration",
-                       "absolute_start_time", "processed_at"]].copy()
-            view.columns = ["ID", "源文件", "说话人", "时长(s)", "开始时间", "处理完成"]
-            st.dataframe(view, width='stretch', hide_index=True)
+            rows = []
+            for i, a in enumerate(audios, 1):
+                end_iso = _audio_end_time(a["recording_start_time"], a.get("audio_duration"))
+                rows.append({
+                    "编号": i,
+                    "源文件": a["source_file"],
+                    "时长(min)": f"{a['audio_duration'] / 60:.1f}" if a.get("audio_duration") else "—",
+                    "源音频开始时间": fmt_dt_no_sec(a["recording_start_time"]),
+                    "源音频结束时间": fmt_dt_no_sec(end_iso),
+                    "开始处理时间": fmt_dt_no_sec(a["processing_started_at"]),
+                    "处理完成时间": fmt_dt_no_sec(a["processing_completed_at"]),
+                })
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-    if records:
-        c = panel("片段详情", "选一条记录查看文本并回放音频；已标注的直接显示姓名")
-        with c:
-            sel_id = st.selectbox("选择记录 ID", df["id"].tolist())
-            row = df[df["id"] == sel_id].iloc[0]
-            who = disp_speaker(str(row["speaker"]), sp_map)
+    c = panel("音频处理详情", "选一个音频编号，查看该音频的完整转写文本并回放；已标注的直接显示姓名")
+    with c:
+        if not audios:
+            st.info("暂无处理记录")
+        else:
+            options = {i: a for i, a in enumerate(audios, 1)}
+            sel = st.selectbox(
+                "选择音频编号",
+                list(options),
+                format_func=lambda i: f"{i} — {options[i]['source_file']}",
+            )
+            a = options[sel]
+            end_iso = _audio_end_time(a["recording_start_time"], a.get("audio_duration"))
             st.markdown(
-                f"<div style='font-size:0.95rem;'><strong>{html.escape(str(row['source_file']))}</strong>"
-                f" — <strong style='color:var(--accent);'>{html.escape(who)}</strong></div>"
-                f"<div style='font-size:0.88rem;color:var(--fg-2);margin:6px 0;'>"
-                f"绝对时间：{row['absolute_start_time']} → {row['absolute_end_time']}</div>"
-                f"<div style='margin-top:8px;padding:12px 16px;background:var(--bg-subtle);"
-                f"border-radius:6px;font-size:0.95rem;line-height:1.6;'>{clean_text(row['text'])}</div>",
+                f"<div style='font-size:0.95rem;'><strong>{html.escape(str(a['source_file']))}</strong>"
+                f"<span style='color:var(--fg-2);font-size:0.85rem;margin-left:12px;'>"
+                f"{fmt_dt_no_sec(a['recording_start_time'])} → {fmt_dt_no_sec(end_iso)}</span></div>",
                 unsafe_allow_html=True,
             )
-            render_segment_audio(row)
+            render_full_audio(a)
+            segs = get_audio_segments(a["file_hash"])
+            if not segs:
+                st.info("该音频暂无转写片段")
+            else:
+                lines = []
+                for s in segs:
+                    who = disp_speaker(str(s["speaker"]), sp_map)
+                    lines.append(
+                        f"<div class='seg-line'>"
+                        f"<span style='color:var(--fg-2);'>{fmt_full_time(s['absolute_start_time'])}"
+                        f" - {fmt_full_time(s['absolute_end_time'])}</span> "
+                        f"<strong>{html.escape(who)}</strong>：{clean_text(s['text'])}</div>"
+                    )
+                st.markdown(
+                    "<div style='margin-top:10px;padding:12px 16px;background:var(--bg-subtle);"
+                    "border-radius:6px;font-size:0.95rem;line-height:1.9;"
+                    "max-height:540px;overflow-y:auto;'>" + "".join(lines) + "</div>",
+                    unsafe_allow_html=True,
+                )
 
 # ================================================================
 # 页 3 — 数据库

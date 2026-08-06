@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS transcripts (
     file_hash               TEXT NOT NULL,
     recording_start_time    TEXT NOT NULL,
     processed_at            TEXT NOT NULL,
+    processing_started_at   TEXT,                    -- v2.67：该音频开始处理时间（成功文件写入）
+    processing_completed_at TEXT,                    -- v2.67：该音频处理完成时间（成功文件写入）
     segment_start_offset    REAL NOT NULL,
     segment_end_offset      REAL NOT NULL,
     absolute_start_time     TEXT NOT NULL,
@@ -166,6 +168,13 @@ def init_db(db_path: Path | None = None) -> None:
         if "skip_label" not in cols:
             conn.execute(
                 "ALTER TABLE speaker_clusters ADD COLUMN skip_label INTEGER DEFAULT 0")
+        # v2.67 迁移：老库 transcripts 补充处理起止时间列（pipeline 新写入；旧记录为 NULL，
+        # WebUI 展示时完成时间回退 processed_at、开始时间显示 —）
+        tcols = {r["name"] for r in conn.execute("PRAGMA table_info(transcripts)")}
+        if "processing_started_at" not in tcols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN processing_started_at TEXT")
+        if "processing_completed_at" not in tcols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN processing_completed_at TEXT")
 
 
 # ====== 去重检查 ======
@@ -404,6 +413,8 @@ class SegmentRow:
     file_hash: str
     recording_start_time: str   # ISO 8601
     processed_at: str
+    processing_started_at: str | None = None   # v2.67：文件开始处理时间
+    processing_completed_at: str | None = None # v2.67：文件处理完成时间
     segment_start_offset: float
     segment_end_offset: float
     absolute_start_time: str
@@ -427,15 +438,17 @@ def insert_segments(segments: Iterable[SegmentRow], db_path: Path | None = None)
         conn.executemany(
             "INSERT INTO transcripts("
             "source_file, file_hash, recording_start_time, processed_at,"
+            "processing_started_at, processing_completed_at,"
             "segment_start_offset, segment_end_offset,"
             "absolute_start_time, absolute_end_time,"
             "speaker, speaker_match_score, text,"
             "audio_duration, confidence, language,"
             "archive_name, audio_path, transcript_path"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     r.source_file, r.file_hash, r.recording_start_time, r.processed_at,
+                    r.processing_started_at, r.processing_completed_at,
                     r.segment_start_offset, r.segment_end_offset,
                     r.absolute_start_time, r.absolute_end_time,
                     r.speaker, r.speaker_match_score, r.text,

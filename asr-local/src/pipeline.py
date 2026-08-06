@@ -158,6 +158,8 @@ class AsrPipeline:
             return PipelineResult(False, error_msg=f"文件不存在: {path}")
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             return PipelineResult(False, error_msg=f"非支持格式: {path.suffix}")
+        # v2.67：记录该音频开始处理时间（成功文件写入 DB，供「处理记录」页展示）
+        processing_started_at = datetime.now().astimezone(BJT).isoformat()
 
         # (1) 内容哈希去重 (FR-001)
         try:
@@ -341,6 +343,8 @@ class AsrPipeline:
                 file_hash=file_hash,
                 recording_start_time=recording_start.isoformat(),
                 processed_at=processed_at,
+                processing_started_at=processing_started_at,
+                processing_completed_at=None,  # 归档入库前统一回填
                 segment_start_offset=s0,
                 segment_end_offset=e0,
                 absolute_start_time=abs_start,
@@ -390,6 +394,10 @@ class AsrPipeline:
 
         # (9) 入库
         try:
+            # v2.67：处理完成时间（归档+文本备份成功后、入库前统一写入所有行）
+            processing_completed_at = datetime.now().astimezone(BJT).isoformat()
+            for r in rows:
+                r.processing_completed_at = processing_completed_at
             n = insert_segments(rows)
             try:
                 from .fts import sync_segments
