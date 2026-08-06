@@ -714,7 +714,8 @@ def get_speaker_utterances(speakers: list[str], limit: int = 100) -> list[dict]:
         ph = ",".join("?" * len(speakers))
         rows = conn.execute(
             f"SELECT id, source_file, absolute_start_time, absolute_end_time, "
-            f"speaker, text FROM transcripts WHERE speaker IN ({ph}) "
+            f"speaker, text, segment_start_offset, segment_end_offset, audio_path "
+            f"FROM transcripts WHERE speaker IN ({ph}) "
             f"ORDER BY absolute_start_time DESC LIMIT ?",
             (*speakers, limit)).fetchall()
     return [dict(r) for r in rows]
@@ -1634,6 +1635,19 @@ elif page == "数据库":
                     + "".join(lines) + "</div>",
                     unsafe_allow_html=True,
                 )
+
+            # ── 试听发言（v2.69）：标注前先听声音确认是谁，不用靠文字猜 ──
+            if utts:
+                utt_opts = {r["id"]: f"[{fmt_full_time(r['absolute_start_time'])}] {clean_text(r['text'], 24)}"
+                            for r in utts}
+                sel_utt = st.selectbox(
+                    "🎧 试听发言（听声音确认说话人；无需记 ID，按时间与文字预览选即可）",
+                    list(utt_opts),
+                    format_func=lambda k: utt_opts[k],
+                    key="utt_listen",
+                )
+                row_utt = next(r for r in utts if r["id"] == sel_utt)
+                render_segment_audio(row_utt)
 
             # ── 标注区（命中声纹簇才可标注） ──
             st.divider()
