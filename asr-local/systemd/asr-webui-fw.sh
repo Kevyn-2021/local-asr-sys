@@ -3,7 +3,7 @@
 # 用法: asr-webui-fw.sh {list|add <ipv4>|remove <ipv4>}
 # 约束:
 #   - 只允许操作端口 8501 的放行规则
-#   - Tailscale 网段 100.64.0.0/10 与 127.0.0.1 为固定放行项，不可删除
+#   - 固定放行项（Tailscale 设备 IP、127.0.0.1 等）由 /etc/asr-webui-fw.conf 的 FIXED_IPS 配置，不可删除
 #   - add/remove 仅接受合法 IPv4 地址
 # 安装（由 install_services.sh 自动执行）:
 #   1) 复制到 /usr/local/sbin/asr-webui-fw.sh（root:root 0755）
@@ -12,7 +12,12 @@
 set -euo pipefail
 
 PORT=8501
-FIXED_NETS=(100.64.0.0/10 127.0.0.1)
+FW_CONF=/etc/asr-webui-fw.conf
+FIXED_IPS="127.0.0.1"
+if [ -f "$FW_CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$FW_CONF"   # 本机配置：FIXED_IPS="ip1 ip2 ..."（Tailscale 设备 IP 等，精确地址见 SEC，不入库）
+fi
 
 is_ipv4() {
   local ip="$1" octet
@@ -25,7 +30,7 @@ is_ipv4() {
 
 is_fixed() {
   local ip="$1" f
-  for f in "${FIXED_NETS[@]}"; do
+  for f in ${FIXED_IPS}; do
     [ "$ip" = "$f" ] && return 0
   done
   return 1
@@ -39,21 +44,29 @@ exists_rule() {
 cmd="${1:-}"
 case "$cmd" in
   list)
-    # 输出每行: <来源IP/CIDR> [# 说明]（去掉 ufw 前缀，便于 WebUI 解析）
-    ufw status | awk -v p="${PORT}/tcp" '
-      match($0, p "[[:space:]]+ALLOW([[:space:]]+IN)?[[:space:]]+") {
-        sub(/^[[:space:]]*/, "")
-        sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+ALLOW([[:space:]]+IN)?[[:space:]]+/, "")
-        print
-      }'
+    # 输出每行: <IP>|<comment>|<fixed:0|1>（机器可读，供 WebUI 解析）
+    ufw status | grep -E "^${PORT}/tcp[[:space:]]+ALLOW([[:space:]]+IN)?[[:space:]]+" | while read -r _ _ src rest; do
+      comment=""
+      case "$rest" in
+        \#*) comment="${rest#\# }" ;;
+      esac
+      if is_fixed "$src"; then
+        echo "${src}|${comment}|1"
+      else
+        echo "${src}|${comment}|0"
+      fi
+    done
     ;;
   add)
-    [ $# -eq 2 ] || { echo "用法: $0 add <ipv4>" >&2; exit 2; }
+    [ $# -ge 2 ] || { echo "用法: $0 add <ipv4> [comment]" >&2; exit 2; }
     is_ipv4 "$2" || { echo "非法 IPv4 地址: $2" >&2; exit 2; }
+    comment="${3:-ASR WebUI (allowlisted device)}"
+    comment="${comment//\'/}"
+    comment="${comment:0:48}"
     if exists_rule "$2"; then
       echo "已存在: $2"
     else
-      ufw allow from "$2" to any port "$PORT" proto tcp comment 'ASR WebUI (allowlisted device)' >/dev/null
+      ufw allow from "$2" to any port "$PORT" proto tcp comment "$comment" >/dev/null
       echo "已添加: $2"
     fi
     ;;
@@ -72,7 +85,7 @@ case "$cmd" in
     fi
     ;;
   *)
-    echo "用法: $0 {list|add <ipv4>|remove <ipv4>}" >&2
+    echo "用法: $0 {list|add <ipv4> [comment]|remove <ipv4>}" >&2
     exit 2
     ;;
 esac

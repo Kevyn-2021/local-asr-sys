@@ -4,8 +4,9 @@ Streamlit Web Dashboard — PRD FR-008
 
 UI v2.0 — KVI 视觉风格重构：
 - 导航：st.segmented_control 分段控件，每个页签是独立区块，不再依赖脆弱的 CSS 覆盖
-- 顶部锁定导航条（v2.41 定稿 / v2.61 调整）：页首单行（Local ASR System 品牌）与 5 个等宽页签同排，
-  整条吸顶，滚动时始终可见；北京时间移到首页「北京时间」面板（导航条下方第一个面板）
+- 顶部锁定导航条（v2.41 定稿 / v2.62 调整）：页首单行（Local ASR System 品牌）与 5 个页签同排，
+  整条吸顶，滚动时始终可见；页签宽度随文字自适应、窄窗口自动折行；
+  北京时间移到首页「北京时间」面板（导航条下方第一个面板）
 - 布局：st.container(border=True) 面板，面板头部 = 标题 + 分隔线，区块边界明确
 - 排版：代码块行高锁定 1.5；搜索/文件浏览上下堆叠；文本预览限高滚动
 - 色彩：灰阶为基（85%），暖赭 #b86a48 作唯一强调色（5%）
@@ -58,7 +59,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-06-14:49:36"
+UI_VERSION = "2026-08-06-15:17:55"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）
@@ -163,15 +164,15 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
     margin-bottom: 0 !important;
 }
 
-/* ── 分段导航（5 个页签等宽，v2.61）──
+/* ── 分段导航（5 个页签，文字自适应宽度，v2.62）──
    Streamlit 1.60 渲染为 div[role="radiogroup"] + button（stSegmentedControl label 结构已不存在）；
    老版本 stSegmentedControl label 规则保留在下方 */
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] {
     margin-left: 0.75rem;   /* 导航整体往右一点点（v2.41） */
-    display: flex; width: 100%;   /* 占满导航列，子按钮等宽（v2.61） */
+    display: flex; flex-wrap: wrap;   /* v2.62：文字自适应宽度；窄窗口自动折行 */
 }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button {
-    cursor: pointer; flex: 1 1 0; min-width: 0;   /* 等宽：按可用宽度平均分配（v2.61） */
+    cursor: pointer; flex: 0 0 auto; min-width: 0;   /* v2.62：宽度随文字内容，不拉伸等宽 */
 }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"],
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"] * {
@@ -1077,7 +1078,6 @@ def render_segment_audio(row: dict):
 # ========== 访问控制辅助 ==========
 
 FW_HELPER = "/usr/local/sbin/asr-webui-fw.sh"
-FW_FIXED = {"100.64.0.0/10", "127.0.0.1"}
 
 
 def _valid_ipv4(text: str) -> bool:
@@ -1104,18 +1104,21 @@ def _fw_list():
         line = line.strip()
         if not line:
             continue
-        parts = line.split()
-        ip = parts[0]
-        comment = line.split("#", 1)[1].strip() if "#" in line else ""
-        rules.append({"ip": ip, "comment": comment, "fixed": ip in FW_FIXED})
+        parts = line.split("|")
+        if len(parts) < 3:
+            continue
+        rules.append({"ip": parts[0], "comment": parts[1], "fixed": parts[2] == "1"})
     return rules
 
 
-def _fw_apply(action: str, ip: str):
-    """调用特权 helper 增/删白名单，返回 (ok, message)。"""
+def _fw_apply(action: str, ip: str, comment: str = ""):
+    """调用特权 helper 增/删白名单（可带描述），返回 (ok, message)。"""
     try:
+        args = ["sudo", "-n", FW_HELPER, action, ip]
+        if comment:
+            args.append(comment[:48])
         out = subprocess.run(
-            ["sudo", "-n", FW_HELPER, action, ip],
+            args,
             capture_output=True, text=True, timeout=15,
         )
         return out.returncode == 0, (out.stdout or out.stderr).strip()
@@ -1125,7 +1128,7 @@ def _fw_apply(action: str, ip: str):
 
 def render_access_control():
     """页 5「访问控制」：IP 白名单管理 + 端口说明（PRD FR-008-A，v2.61）。"""
-    c = panel("IP 白名单 · 网页访问", "端口 8501 仅放行以下来源；Tailscale 网段固定放行、不可删除")
+    c = panel("IP 白名单 · 网页访问", "端口 8501 仅放行以下来源；Tailscale 设备 IP 固定放行、不可删除")
     with c:
         rules = _fw_list()
         if rules is None:
@@ -1133,7 +1136,7 @@ def render_access_control():
                        "sudoers NOPASSWD）。详见 TDD v2.61「访问控制」；安装后刷新本页即可。")
         else:
             if not rules:
-                st.info("当前白名单为空（仅 Tailscale 网段可访问）。")
+                st.info("当前白名单为空（仅 Tailscale 设备可访问）。")
             for r in rules:
                 col_ip, col_desc, col_op = st.columns([1.2, 3.2, 1])
                 with col_ip:
@@ -1151,14 +1154,18 @@ def render_access_control():
                             st.error(msg)
                         st.rerun()
             st.divider()
-            col_in, col_btn = st.columns([2.4, 1])
-            new_ip = col_in.text_input("新增白名单 IP", placeholder="例如 192.168.3.20", key="fw_new_ip")
-            if col_btn.button("添加", type="primary"):
+            st.markdown("**新增白名单 IP**")
+            col_ip, col_desc, col_btn = st.columns([1.4, 2.2, 1], vertical_alignment="center")
+            new_ip = col_ip.text_input("IP", label_visibility="collapsed",
+                                       placeholder="例如 192.168.3.20", key="fw_new_ip")
+            new_desc = col_desc.text_input("描述", label_visibility="collapsed",
+                                           placeholder="描述（可选，≤48 字符）", key="fw_new_desc")
+            if col_btn.button("添加", type="primary", use_container_width=True, key="fw_add_btn"):
                 ip = new_ip.strip()
                 if not _valid_ipv4(ip):
                     st.error("请输入合法的 IPv4 地址")
                 else:
-                    ok, msg = _fw_apply("add", ip)
+                    ok, msg = _fw_apply("add", ip, new_desc.strip())
                     if ok:
                         st.success(msg)
                     else:
@@ -1182,7 +1189,6 @@ def render_access_control():
             "</tbody></table>",
             unsafe_allow_html=True,
         )
-        st.caption("远程桌面端口（3389 / RustDesk 21115-21119）已关闭：ThinkPad 不再提供远程桌面服务（v2.61）。")
 
 
 # ========== 页面 ==========
@@ -1882,8 +1888,8 @@ elif page == "文件归档":
 elif page == "访问控制":
     render_access_control()
 
-# ── 页脚（版本时间戳：确认 ThinkPad 上部署的是否为最新代码） ──
+# ── 页脚（部署时间戳：核对 ThinkPad 部署代码版本；加"部署时间"前缀避免误当当前时间，v2.62） ──
 st.markdown(
-    f"<div class='footer-note'>ASR WebUI · KVI 视觉风格 · {UI_VERSION}</div>",
+    f"<div class='footer-note'>ASR WebUI · KVI 视觉风格 · 部署时间 {UI_VERSION}</div>",
     unsafe_allow_html=True,
 )

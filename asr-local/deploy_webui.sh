@@ -77,4 +77,4 @@ ssh "${REMOTE_HOST}" "
 
 echo ""
 echo "部署完成。浏览器强制刷新查看（Mac: Cmd+Shift+R / Win: Ctrl+Shift+R）"
-echo "页脚应显示: ASR WebUI · KVI 视觉风格 · ${STAMP}"
+echo "页脚应显示: ASR WebUI · KVI 视觉风格 · 部署时间 ${STAMP}"
