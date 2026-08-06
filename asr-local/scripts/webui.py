@@ -1502,7 +1502,8 @@ elif page == "处理记录":
                     "开始处理时间": fmt_dt_no_sec(a["processing_started_at"]),
                     "处理完成时间": fmt_dt_no_sec(a["processing_completed_at"]),
                 })
-            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+            # v2.70：编号语义不变（1 = 最远），表格倒序显示（最大编号在最上方）
+            st.dataframe(pd.DataFrame(list(reversed(rows))), width="stretch", hide_index=True)
 
     c = panel("音频处理详情", "选一个音频编号，查看该音频的完整转写文本并回放；已标注的直接显示姓名")
     with c:
@@ -1555,7 +1556,7 @@ elif page == "数据库":
             "这套系统<strong>不需要单独录入声纹</strong>。每次处理音频时，"
             "系统会自动从声音片段里抓取每个说话人的声纹，记为一个 <code>unknown_XXXX</code> 编号（见下方「声纹簇·标注学习」）。"
             "你只要把认出的人<strong>标注上姓名</strong>，系统就会把这个声纹和姓名关联起来，"
-            "并在后续每次出现时不断学习、越认越准。<br>"
+            "并在后续每次出现时不断学习、越认越准。"
             "也就是说：<strong>你标注 → 系统学习 → 下次自动认出</strong>，如此循环配合。"
             "</div>",
             unsafe_allow_html=True,

@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.69  
+**版本**: v2.70  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -725,6 +725,7 @@ MEMORY_CONFIG = {
 | v2.67 | 2026-08-06 | **「处理记录」页重构为按音频维度（db.py §PRD7.1 / pipeline.py / webui.py §PRD8.2 页2）**: ① **db.py**——`transcripts` 新增 `processing_started_at`/`processing_completed_at` 两列（SCHEMA_SQL + init_db ALTER TABLE 老库迁移），`SegmentRow` 与 `insert_segments` 同步；② **pipeline.py**——`process_file` 开头记录开始处理时间，归档+文本备份成功后、入库前回填完成处理时间；③ **webui.py**——页 2 移除「最近处理」「筛选条件」「片段记录/片段详情」四面板，改为两面板：「音频处理记录」（`get_audio_records()` 按 file_hash 聚合、按源音频时间从远到近，显示层编号 1..N，列：编号/源文件/时长(min)/源音频起止时间/开始处理/完成处理时间，`fmt_dt_no_sec` 不含秒；旧记录完成时间回退 processed_at、开始时间显示 —）与「音频处理详情」（`get_audio_segments()` 取该音频全部片段，按绝对时间升序渲染 `[起 - 止] 说话人：文本`，说话人经显示层映射；`render_full_audio()` 整段回放替代按片段切分）；④ 删除页 2 专用的 `get_all_records()`（搜索页的 `render_segment_audio` 保留）；⑤ 部署验证：webui.py/db.py/pipeline.py 三端 md5 一致，webui 重启后老库自动迁移 |
 | v2.68 | 2026-08-06 | **处理记录显示归档名 + 标注学习重构（webui.py §PRD8.2 页2/页3 / PRD FR-003-CLUSTER）**: ① 页 2 两面板的音频名称改用 `archive_name`（回退 `source_file`），「音频处理记录」列头改「归档音频」，「音频处理详情」下拉与标题同步；② 新增 `get_speaker_utterances()`（按原始标签 `IN` 查询发言，绝对时间倒序限 100 条）；③ 「声纹簇·标注学习」面板重写——说话人下拉（全部声纹簇 + 声纹库命名的无簇说话人，选项带标注态标识：已标注/（未标注）/🚫 不标注）→ 发言列表（绝对时间 + 源文件 + 文本）→ 标注区（未标注：标注并回填/设为不标注；已标注：改标并回填/改回未知两步确认；不标注中：恢复标注），删除旧 ID/编号/标注为/样本数表格与三段式 tab；④ 五端协同——PRD/TDD/SEC/代码/运行节点同步（SEC 无敏感信息变化无需改）；⑤ 部署验证：webui.py 两端 md5 一致，页 2/页 3 渲染验证 |
 | v2.69 | 2026-08-06 | **声纹标注面板试听发言（webui.py §PRD8.2 页3）**: ① `get_speaker_utterances()` SELECT 增加 `segment_start_offset`/`segment_end_offset`/`audio_path`（发言切片信息本就在 transcripts，仅补取）；② 「声纹簇·标注学习」发言列表下方新增 **「🎧 试听发言」**下拉（选项 = 时间 + 文字预览，内部以 `transcripts.id` 为键但不展示任何 ID）+ 复用 `render_segment_audio()` 播放（soundfile 读归档音频后按偏移切段）；③ 五端协同——PRD/TDD/SEC/代码/运行节点同步（SEC 无敏感信息变化无需改）；④ 部署验证：webui.py 两端 md5 一致，AppTest 无头渲染（含数据库页新控件）通过 |
+| v2.70 | 2026-08-06 | **两处 UI 微调（webui.py §PRD8.2 页2/页3）**: ① 「音频处理记录」表格改为倒序显示（`rows` 构建按源音频时间升序保证编号 1 = 最远，展示时 `list(reversed(rows))` 让最大编号在最上方）；② 「声纹怎么来的」面板移除结尾句前的 `<br>`，标注学习循环说明并入同一段落；③ 部署验证：webui.py 两端 md5 一致 |
 
 ---
 
