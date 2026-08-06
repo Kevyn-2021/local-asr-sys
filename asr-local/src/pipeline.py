@@ -34,6 +34,18 @@ from src.utils.time_utils import (
 log = logging.getLogger("asr-pipeline")
 
 
+def _available_mem_mb() -> float | None:
+    """Linux MemAvailable（可分配且不触发 swap 的内存，MB）；非 Linux/读取失败返回 None。"""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return float(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return None
+
+
 class PipelineError(RuntimeError):
     pass
 
@@ -211,12 +223,28 @@ class AsrPipeline:
         # (7) ASR — 对每个 diarization 段取音频做识别
         self._report(status_cb, "ASR 转录")
         try:
-            # v2.49：按音频时长动态分配加载精度（auto），大文件 bf16 兜底防 OOM
+            # v2.58：按"决策时可用内存 + 语音时长"动态分配加载精度（auto）
+            #   FP32 需要可用内存 >= fp32_min_avail_mb 且语音总量 <= fp32_max_speech_s，
+            #   否则 bf16 兜底防 OOM。比 v2.49 的"音频总时长 >= 30 分钟"更精准
+            #   （v2.57 语音裁剪后 ASR 峰值主要取决于模型本身，与文件大小/总时长相关性弱）。
             dtype = str(ASR_CONFIG.get("torch_dtype", "auto")).lower()
+            avail_mb = None
+            speech_s = sum(v.end_offset_s - v.start_offset_s for v in vad_segs)
             if dtype == "auto":
-                big_s = float(ASR_CONFIG.get("torch_dtype_big_s", 1800))
-                dtype = "bfloat16" if duration_s >= big_s else "float32"
-            log.info("[pipeline] ASR 精度决策：%s（音频 %.1f 分钟）", dtype, duration_s / 60)
+                avail_mb = _available_mem_mb()
+                fp32_ok = (
+                    avail_mb is not None
+                    and avail_mb >= float(ASR_CONFIG.get("fp32_min_avail_mb", 13500))
+                    and speech_s <= float(ASR_CONFIG.get("fp32_max_speech_s", 1800))
+                )
+                dtype = "float32" if fp32_ok else "bfloat16"
+            log.info(
+                "[pipeline] ASR 精度决策：%s（可用内存 %s，语音 %.1f 分钟 / 音频 %.1f 分钟）",
+                dtype,
+                f"{avail_mb:.0f}MB" if avail_mb is not None else "未知",
+                speech_s / 60,
+                duration_s / 60,
+            )
             self._load_asr(torch_dtype=dtype)
         except Exception as e:
             move_to_error(path, reason=f"ASR 加载失败: {e}")
