@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 产品需求文档 (PRD)
 
-**版本**: v2.59  
+**版本**: v2.60  
 **日期**: 2026-08-04  
 **作者**: 用户 + Kimi  
 **状态**: 已实现
@@ -327,6 +327,7 @@
   - 当前示例：`http://<ThinkPad当前IP>:8501`；Tailscale `http://<ThinkPad-Tailscale-IP>:8501`
   - **注：以上均为示例地址——ThinkPad 随网络环境更换 IP，实际使用时请替换为 ThinkPad 当前的真实地址**
   - 建议加入浏览器书签，一键打开
+  - **访问控制（v2.60）**: 端口 8501 由 ufw 限制为**仅放行 Tailscale 网段（100.64.0.0/10）与白名单设备 IP**，其余来源一律拒绝（ufw `Default: deny (incoming)` 兜底）；局域网内他人即使拿到地址也无法打开。新增设备：① 安装/开启 Tailscale（推荐，办公室/家里通用，访问 `http://<ThinkPad-Tailscale-IP>:8501`）；② 或在路由器上为该设备 **MAC 绑定固定 IP**，再在 ThinkPad 的 ufw 中加入该 IP（手机随机 MAC 需关闭该 Wi-Fi 的"私有地址"才能稳定绑定）
 - **部署环境（SSH）**:
   - SSH 地址：`ssh kevin@<ThinkPad当前IP>`（端口 22，默认）；部署脚本内置默认地址（本机维护，不随仓库发布）
   - 代码目录：`/home/kevin/asr_sys_local/asr-local/`；数据目录：`/home/kevin/asr_sys_local/audio_inbox/`（收件箱）、`/home/kevin/asr_sys_local/audio_archive/`（归档与数据库）
@@ -372,6 +373,7 @@
   - 传输全程端到端加密，不经第三方中转服务器（NAT 打洞成功后为 P2P 直连）
   - ThinkPad 重启后 Tailscale 与流水线服务均以 systemd 自启
   - 使用 Tailscale ACL 限制只有用户本人的设备可访问
+  - **端口 8501 防火墙策略（v2.60）**: ufw 仅放行 Tailscale 网段（100.64.0.0/10）+ 白名单设备 IP，未在白名单/Tailscale 内的设备无法访问
 - **备选**: 若未来需要离线本地副本，可叠加 Syncthing 同步文本备份（本版本不实现）
 
 #### FR-008-S: 转录全文搜索（含中文分词修复）
@@ -459,7 +461,7 @@
 | 完全离线 | **v2.18 修正**：所有模型（Silero VAD / PyAnnote Diarization / 声纹 / Qwen3-ASR）首次下载至本地后，运行时**完全离线**，不与 GitHub/HuggingFace 交互：Silero VAD 用 `source='local'` 加载本地缓存，PyAnnote 用 `HF_HUB_OFFLINE=1`，Qwen3-ASR 直接加载本地自定义解压目录 `models/Qwen3-ASR-1.7B-hf/`（v2.18 修复：`local_files_only=True` 只认 hub 缓存格式，匹配不到自定义目录会误判"本地缺失"而回退联网失败）；仅当本地模型缺失时才联网下载一次（依赖 `HF_TOKEN`） |
 | 数据不出个人设备 | 音频、转录结果均只存于 ThinkPad；跨设备访问走 Tailscale 加密隧道，无云端副本 |
 | 模型权重本地化 | 所有模型权重存储在 `/home/kevin/asr_sys_local/asr-local/models/`（通过 `HF_HOME` 环境变量统一指向），避免写入 `~/.cache/huggingface/` |
-| 访问控制 | 数据库文件权限 600；Tailscale ACL 仅放行用户本人设备 |
+| 访问控制 | 数据库文件权限 600；Tailscale ACL 仅放行用户本人设备；WebUI 端口 8501 仅放行 Tailscale 网段 + 白名单设备 IP（v2.60） |
 | **时间戳防篡改** | 绝对时间戳应用层写入后，数据库触发器禁止修改 |
 
 ### 5.4 可维护性
@@ -1058,6 +1060,7 @@ $ bash run.sh
 | v2.57 | 2026-08-05 | **说话人分离段修复（FR-003，根因）**：① 定位——"ASR 内存满+耗时数小时"的根因是**分离段把静音一起包进来**（VAD 拼接把同一说话人的多个语音片断在拼接轴上并成一段，映射回原时间轴后横跨静音）：58.6 分钟文件 VAD 语音仅 5.2 分钟，分离段却合计 51.7 分钟、最长 22 分钟，ASR 被迫转录含静音的整段；② 修复——分离结果**裁剪回真实语音片断**（与 VAD 取交集），段总时长回到语音量级（5.4 分钟、最长 35.7s）；③ 效果——ASR 只转录真实语音，内存与耗时恢复可预期；工程细节见 [TDD v2.57](./TDD_local_asr_system.md#6-变更日志) |
 | v2.58 | 2026-08-06 | **ASR 精度决策升级（FR-004）**：① 原规则按"音频总时长 ≥30 分钟"切 bf16；升级为按**决策时可用内存 + VAD 语音时长**——可用内存 ≥13.5GB 且语音 ≤30 分钟 → FP32（快），否则 bf16（稳）；② 理由：语音裁剪后 ASR 峰值主要由模型决定，与文件大小/总时长弱相关，内存+语音量更精准；③ 收件箱 11 个真实文件实战观测，阈值可按实测微调；工程细节见 [TDD v2.58](./TDD_local_asr_system.md#6-变更日志) |
 | v2.59 | 2026-08-06 | **多格式音频加载修复（FR-001）**：① 实战发现——m4a（及 soundfile 不支持的 mp3）加载失败（pydub 回退分支的 `del` 未定义变量 bug）；② 修复后支持 m4a/mp3/wav 等全部格式；③ 11 文件实战批处理已重启；工程细节见 [TDD v2.59](./TDD_local_asr_system.md#6-变更日志) |
+| v2.60 | 2026-08-06 | **WebUI 访问控制（FR-008 / FR-008-T）**: ① 端口 8501 不再对局域网所有人开放——ufw 删除 `allow 8501/tcp`（Anywhere），改为仅放行 Tailscale 网段（100.64.0.0/10）与白名单设备 IP（当前：开发机 MacBook）；② 新增设备推荐走 Tailscale（跨办公室/家里通用），或路由器 MAC 绑定固定 IP 后加入 ufw 白名单（手机随机 MAC 注意关闭"私有地址"）；③ `install_services.sh` 默认策略同步；工程细节见 [TDD v2.60](./TDD_local_asr_system.md#6-变更日志) |
 | v2.48 | 2026-08-05 | **ASR 加载精度可配置（FR-004）**：① `ASR_CONFIG.torch_dtype` 支持环境变量 `ASR_TORCH_DTYPE` 覆盖——默认 **FP32**（1.11× 实时，内存红线 <12GB 不变），大文件/低内存时切 **bf16** 兜底（内存约减半、3.14× 实时）；② 背景——58.6 分钟大文件两次 OOM（FP32 峰值 ~15GB 超出 16GB 机器），切 bf16 后正常处理；③ 精度开关仅影响加载精度，不影响转录结果；工程细节见 [TDD v2.48](./TDD_local_asr_system.md#6-变更日志) |
 | v2.49 | 2026-08-05 | **ASR 精度动态分配（FR-004）**：① 默认 `auto`——按音频时长自动选择加载精度：**≥30 分钟 → bf16**（内存约减半、3.14× 实时），**<30 分钟 → FP32**（1.11× 实时）；保证大文件不再 OOM、小文件速度不降；② 阈值与精度均可配置（`ASR_TORCH_DTYPE` / `ASR_TORCH_DTYPE_BIG_S`）；③ 精度不影响转录结果；工程细节见 [TDD v2.49](./TDD_local_asr_system.md#6-变更日志) |
 | v2.50 | 2026-08-05 | **文件名时间提取格式统一（FR-001-TS）**：① 紧凑式支持横线/下划线两种分隔（`recording_20260731_143052` 与 `recording-20260731-143052` 均可识别），时间前后可带任意前缀/后缀；② PRD「支持的文件名格式」与 TDD 正则/描述同步为同一清单（长格式混用分隔符 / 紧凑式 / ISO T 分隔），消除两处文档与实现的口径差异；工程细节见 [TDD v2.50](./TDD_local_asr_system.md#6-变更日志) |

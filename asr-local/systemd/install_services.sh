@@ -2,9 +2,11 @@
 # 把 systemd 单元安装到 ~/.config/systemd/user/ 并启用
 set -euo pipefail
 SUDO_PW="${1:-}"
+ASR_WEB_ALLOW_IPS="${2:-}"
 if [ -z "$SUDO_PW" ]; then
-  echo "用法: bash systemd/install_services.sh <sudo_password>" >&2
+  echo "用法: bash systemd/install_services.sh <sudo_password> [\"ip1 ip2 ...\"]" >&2
   echo "  需要 sudo 以便 enable-linger（用户退出登录后服务也能运行）和设置 firewall。" >&2
+  echo "  第 2 个参数（可选）：WebUI 访问白名单设备 IP（空格分隔；推荐设备接入 Tailscale 则无需）" >&2
   exit 2
 fi
 
@@ -38,8 +40,11 @@ systemctl --user enable asr-webui.service   || true
 # linger：用户登出后服务也继续跑
 echo "$SUDO_PW" | sudo -S loginctl enable-linger "$USER"
 
-# ufw: 放行 8501 (局域网 + Tailscale；真正鉴权交给 Tailscale ACL)
-( echo "$SUDO_PW" | sudo -S ufw allow 8501/tcp comment "ASR webui (via Tailscale)" ) || true
+# ufw: 8501 仅放行 Tailscale 网段 + 可选白名单设备 IP（v2.60：不再对局域网所有人开放）
+( echo "$SUDO_PW" | sudo -S ufw allow from 100.64.0.0/10 to any port 8501 proto tcp comment "ASR WebUI (Tailscale)" ) || true
+for ip in ${ASR_WEB_ALLOW_IPS}; do
+  ( echo "$SUDO_PW" | sudo -S ufw allow from "$ip" to any port 8501 proto tcp comment "ASR WebUI (allowlisted device)" ) || true
+done
 echo "$SUDO_PW" | sudo -S ufw --force enable 2>/dev/null || true
 
 echo ""
