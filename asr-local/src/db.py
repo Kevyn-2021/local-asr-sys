@@ -413,8 +413,6 @@ class SegmentRow:
     file_hash: str
     recording_start_time: str   # ISO 8601
     processed_at: str
-    processing_started_at: str | None = None   # v2.67：文件开始处理时间
-    processing_completed_at: str | None = None # v2.67：文件处理完成时间
     segment_start_offset: float
     segment_end_offset: float
     absolute_start_time: str
@@ -428,6 +426,8 @@ class SegmentRow:
     archive_name: str | None = None
     audio_path: str | None = None
     transcript_path: str | None = None
+    processing_started_at: str | None = None   # v2.67：文件开始处理时间
+    processing_completed_at: str | None = None # v2.67：文件处理完成时间
 
 
 def insert_segments(segments: Iterable[SegmentRow], db_path: Path | None = None) -> int:
