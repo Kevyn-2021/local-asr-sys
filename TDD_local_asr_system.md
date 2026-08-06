@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.71  
+**版本**: v2.72  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -156,7 +156,7 @@ FROM persons p ORDER BY p.created_at
 
 WebUI 人物档案面板将 `has_voiceprint` 映射为"是/否"显示，用户可一眼看出哪些人已标注声纹、哪些尚未标注。
 
-**标注回填不覆盖已有档案（v2.19）**：声纹簇面板「确认标注并回填」时，若 `persons` 表中已存在该姓名（用户填过资料），**不能**再调用只传姓名的 `upsert_person()`——其 `ON CONFLICT DO UPDATE` 会把未传字段覆盖为 NULL，导致"标注后档案只剩姓名"。必须先 `get_person()` 判断：仅当档案不存在时才自动建档。
+**标注回填不覆盖已有档案（v2.19）**：声纹簇面板「标注并回填」时，若 `persons` 表中已存在该姓名（用户填过资料），**不能**再调用只传姓名的 `upsert_person()`——其 `ON CONFLICT DO UPDATE` 会把未传字段覆盖为 NULL，导致"标注后档案只剩姓名"。必须先 `get_person()` 判断：仅当档案不存在时才自动建档。
 
 ### 1.7 声纹簇标注校准（v2.20）
 
@@ -183,11 +183,13 @@ def apply_cluster_label(cluster_id, target):
 - **回填匹配串的选择**：簇从未标注过 → transcripts 中记录是 `label`（pipeline 写入），匹配 `label`；已标注过 → 记录已被回填为姓名，匹配**姓名**。改回时用 `old_name` 匹配、回填到 `label`。
 - **边界说明**：若同一姓名被标到多个簇，改回/改标会按姓名全局替换（UI 已提示"该姓名的记录将改回编号"）——属合理近似，用户可随后逐个再标注。
 
-**UI（「声纹簇·标注学习」面板，v2.20）**：
-- 顶部表格列出**全部簇**（ID / 编号 / 标注为 / 学习样本数），标注列显示姓名、"（未标注）"或"🚫 不标注"（v2.43）
-- `st.tabs` 三个操作区：①「✏️ 标注为某人」——未标注且未跳过编号 → 姓名（原「确认标注并回填」；不标注编号不出现）；②「🔧 校准已标注」——改标为他人，或「改回未知（沿用编号 {label}）」；③「🚫 不标注」（v2.43）——**陌生人设为不标注**：保持原编号 `unknown_XXXX`，两个多选框分别批量「设为不标注」/「恢复标注」
-- 改回未知为**两步确认**（`st.session_state["unassign_cid"]`）：首次点击仅记录待确认簇 ID 并显示警告，再次点「确认改回」才执行，防误操作
-- **不标注语义（v2.43）**：`skip_label=1` 是独立于标注的标记——不写 `assigned_name`、不改 `label`/`embedding`，**不触发任何 transcripts 回填**（编号未变）；匹配层（`voiceprint.py`）照常加载并学习该簇（`load_all_clusters` 仍返回全部簇）；「标注为某人」列表按 `NOT assigned_name AND NOT skip_label` 过滤；恢复标注即 `set_cluster_skip(cid, False)`，编号回到标注列表、可随时标注（标注→改回→再标注仍全程可逆）
+**UI（「声纹簇·标注学习」面板，v2.20 起 / v2.68 重构为单流程 / v2.69 加试听）**：
+布局按「筛选说话人 → 查看发言 → 试听确认 → 直接标注」组织（见 [PRD §8.2 页 3](./PRD_local_asr_system.md#82-系统看板布局ui-v20)），此处仅记录实现要点：
+- **说话人下拉**（替代 v2.68 前的"全部簇表格 + 三段式 tab"）：选项 = 全部声纹簇（`unknown_XXXX`，带标注态：已标注 /（未标注）/ 🚫 不标注）+ `get_speaker_list()` 中无簇的说话人；无任何 ID 展示
+- **发言列表**：`get_speaker_utterances(raws, limit=100)` 按 `speaker IN (label[, assigned_name])` 查询，绝对时间倒序
+- **「🎧 试听发言」**（v2.69）：下拉按「时间 + 文字预览」选一条，`render_segment_audio()` 按 `segment_start_offset/end_offset` 从 `audio_path` 切段播放（内部以 `transcripts.id` 为键，不展示）
+- **标注操作区**（按簇渲染）：未标注 →「标注并回填」+「🚫 设为不标注」；已标注 →「改标并回填」+「改回未知（沿用编号 {label}）」；不标注中 →「↩️ 恢复标注」；改回未知为**两步确认**（`st.session_state[f"unassign_{cluster_id}"]`），操作统一走 `apply_cluster_label()` 与 `set_cluster_skip()`
+- **不标注语义（v2.43）**：`skip_label=1` 是独立于标注的标记——不写 `assigned_name`、不改 `label`/`embedding`，**不触发任何 transcripts 回填**（编号未变）；匹配层（`voiceprint.py`）照常加载并学习该簇（`load_all_clusters` 仍返回全部簇）；不标注簇在说话人下拉显示「🚫 不标注」且标注入口隐藏，恢复标注即 `set_cluster_skip(cid, False)`、入口重新出现（标注→改回→再标注仍全程可逆）
 
 ---
 
@@ -546,7 +548,7 @@ def move_to_error(src: Path, reason: str = "") -> None:
 
 ### 4.7 WebUI 样式踩坑
 - **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
-- **顶部锁定导航条（v2.38 实现 / v2.39 修复生效 / v2.41 单行定稿 / v2.61 五页签 + 时间移出 / v2.62 宽度回归折行 / v2.63 加宽分组 / v2.64 去缝隙对齐）**：页首 + 页签同排（`st.columns`）后整条吸顶。关键坑：① **不能用 `:first-child` 定位吸顶行**——CSS 注入的 `st.markdown` 才是主 vertical block 的第一个元素，必须用 `:has(.topbar-title)` 精确定位页首行；② **吸顶目标必须是 `stLayoutWrapper` 而非 `stElementContainer`**——Streamlit 1.60 的 `st.columns` 顶层容器是 `stLayoutWrapper`（实测 sticky 有效），`stElementContainer` 只是列内部元素的包装（v2.38 因此整块样式未命中：不吸顶、无底边框、无留白）；③ **吸顶条留白不能用元素 margin**——sticky 元素的 margin 区域透明，下层内容滚动时会从 margin 处透出，留白一律用 padding；④ **分段控件 1.60 渲染为 `div[role="radiogroup"]`+button**（`stSegmentedControl label` 结构已不存在），选中态用 `button[aria-checked="true"]`，老版本规则保留兜底；⑤ **v2.41 单行布局**：`.topbar-title` 改 `flex-direction: row` + `align-items: baseline` + `white-space: nowrap`（品牌 1.05rem/600 与北京时间 0.82rem 同行不换行），导航右移用 `div[role="radiogroup"] { margin-left: 0.75rem }`（+12px，列比保持 1.2:1.8）；⑥ **v2.61 五页签 + 时间移出**：`NAV_OPTIONS` 增为 5 个短标签（状态概览/处理记录/数据库/文件归档/访问控制），`.topbar-time` 移除、首页新增「北京时间」面板；⑦ **v2.62 宽度回归 + 折行**：`div[role="radiogroup"]` 去掉 `width:100%`、`button` 去掉 `flex:1 1 0`，改回 `flex:0 0 auto; min-width:0`（宽度随文字内容，实测 状态概览/处理记录/文件归档/访问控制 90px、数据库 76px），容器加 `flex-wrap: wrap`——窄窗口自动折行（实测 480px 视口折成两行）；⑧ **v2.63 加宽 + 分组**：nav button 加 `padding-left/right: 1.5rem !important`（实测 4 字页签 90→107px、数据库 76→93px，仍按文字自适应）；「访问控制」页白名单按固定性分组——固定放行置顶、设备白名单置底，新增表单保持面板底部；⑨ **v2.64 去缝隙 + 行对齐**：移除 radiogroup 的 `gap:6px`（页签恢复无缝连续外观），tab 内文字 `letter-spacing` 0.02em→0.05em（实测 0.7px）；白名单每行 `st.columns([1.2, 3.2, 1], vertical_alignment="center")`——实测「移除」按钮与左侧 IP 中心 Y 一致。
+- **顶部锁定导航条（v2.38 实现 / v2.39 修复生效 / v2.41 单行定稿 / v2.61 五页签 + 时间移出 / v2.62 宽度回归折行 / v2.63 加宽分组 / v2.64 去缝隙对齐）**：页首 + 页签同排（`st.columns`）后整条吸顶。关键坑：① **不能用 `:first-child` 定位吸顶行**——CSS 注入的 `st.markdown` 才是主 vertical block 的第一个元素，必须用 `:has(.topbar-title)` 精确定位页首行；② **吸顶目标必须是 `stLayoutWrapper` 而非 `stElementContainer`**——Streamlit 1.60 的 `st.columns` 顶层容器是 `stLayoutWrapper`（实测 sticky 有效），`stElementContainer` 只是列内部元素的包装（v2.38 因此整块样式未命中：不吸顶、无底边框、无留白）；③ **吸顶条留白不能用元素 margin**——sticky 元素的 margin 区域透明，下层内容滚动时会从 margin 处透出，留白一律用 padding；④ **分段控件 1.60 渲染为 `div[role="radiogroup"]`+button**（`stSegmentedControl label` 结构已不存在），选中态用 `button[aria-checked="true"]`，老版本规则保留兜底；⑤ **v2.41 单行布局**：`.topbar-title` 改 `flex-direction: row` + `align-items: baseline` + `white-space: nowrap`（品牌 1.05rem/600 与北京时间 0.82rem 同行不换行），导航右移用 `div[role="radiogroup"] { margin-left: 0.75rem }`（+12px，列比保持 1.2:1.8）；⑥ **v2.61 五页签 + 时间移出**：`NAV_OPTIONS` 增为 5 个短标签（状态概览/处理记录/数据库/文件归档/访问控制），`.topbar-time` 移除、首页新增「北京时间」面板；⑦ **v2.62 宽度回归 + 折行**：`div[role="radiogroup"]` 去掉 `width:100%`、`button` 去掉 `flex:1 1 0`，改回 `flex:0 0 auto; min-width:0`（宽度随文字内容，实测 状态概览/处理记录/文件归档/访问控制 90px、数据库 76px），容器加 `flex-wrap: wrap`——窄窗口自动折行（实测 480px 视口折成两行）；⑧ **v2.63 加宽 + 分组**：nav button 加 `padding-left/right: 1.5rem !important`（实测 4 字页签 90→107px、数据库 76→93px，仍按文字自适应）；「访问控制」页白名单按固定性分组——固定放行置顶、设备白名单置底，新增表单保持面板底部；⑨ **v2.64 去缝隙 + 行对齐**：移除 radiogroup 的 `gap:6px`（页签恢复无缝连续外观），tab 内文字 `letter-spacing` 0.02em→0.05em（实测 0.7px）；白名单每行 `st.columns([1.2, 3.2, 1], vertical_alignment="center")`——实测「移除」按钮与左侧 IP 中心 Y 一致；⑩ **v2.71 水平对齐**：「固定」由 `st.caption` 改为全宽居中 `<div>`、「移除」按钮加 `use_container_width=True`——两者同宽居中，消除按钮偏向右侧的错位感。
 
 ### 4.8 工程组织与部署
 
@@ -727,6 +729,7 @@ MEMORY_CONFIG = {
 | v2.69 | 2026-08-06 | **声纹标注面板试听发言（webui.py §PRD8.2 页3）**: ① `get_speaker_utterances()` SELECT 增加 `segment_start_offset`/`segment_end_offset`/`audio_path`（发言切片信息本就在 transcripts，仅补取）；② 「声纹簇·标注学习」发言列表下方新增 **「🎧 试听发言」**下拉（选项 = 时间 + 文字预览，内部以 `transcripts.id` 为键但不展示任何 ID）+ 复用 `render_segment_audio()` 播放（soundfile 读归档音频后按偏移切段）；③ 五端协同——PRD/TDD/SEC/代码/运行节点同步（SEC 无敏感信息变化无需改）；④ 部署验证：webui.py 两端 md5 一致，AppTest 无头渲染（含数据库页新控件）通过 |
 | v2.70 | 2026-08-06 | **两处 UI 微调（webui.py §PRD8.2 页2/页3）**: ① 「音频处理记录」表格改为倒序显示（`rows` 构建按源音频时间升序保证编号 1 = 最远，展示时 `list(reversed(rows))` 让最大编号在最上方）；② 「声纹怎么来的」面板移除结尾句前的 `<br>`，标注学习循环说明并入同一段落；③ 部署验证：webui.py 两端 md5 一致 |
 | v2.71 | 2026-08-06 | **三处 UI 微调（webui.py §PRD8.2 页2/页3/页5）**: ① 「访问控制」白名单行的「固定」由 `st.caption` 改为全宽居中 `<div>`，「移除」按钮加 `use_container_width=True`——两者同宽居中，消除按钮偏向右侧的错位感；② 「音频处理记录」面板说明去掉「，不再拆分片段」；③ 「声纹簇·标注学习」面板说明去掉「（原「处理记录」页说话人筛选已并入）」；④ 部署验证：webui.py 两端 md5 一致 |
+| v2.72 | 2026-08-06 | **五端一致性 Review（文档工程 / ThinkPad 同步）**: ① §1.7 UI 描述改写为 v2.68/69 单流程（说话人下拉-发言列表-试听-标注操作区），收敛与 PRD §8.2 页 3 的重复、只留实现要点；「确认标注并回填」按钮名统一为「标注并回填」；§4.7 补 v2.71 白名单水平对齐要点；② **ThinkPad 工程文件全量 md5 比对**——部署脚本 18 个运行时文件 + settings.py 全部一致；systemd/asr-webui.service 与 install_services.sh 存在历史漂移（旧 User/Group 行、旧路径 HF_HOME=asr-local/model_cache、旧 ufw 逻辑、缺白名单参数），已从仓库同步覆盖；/usr/local/sbin/asr-webui-fw.sh 与仓库仅注释措辞差异、行为一致（均读 /etc/asr-webui-fw.conf 的 FIXED_IPS）；deploy_webui.sh 为 Mac 侧工具按设计不同步；③ 版本头部与变更日志两两核对一致（v1.0→v2.72） |
 
 ---
 
