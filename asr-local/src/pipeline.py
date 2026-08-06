@@ -34,6 +34,18 @@ from src.utils.time_utils import (
 log = logging.getLogger("asr-pipeline")
 
 
+def _malloc_trim():
+    """把 glibc 空闲堆内存归还操作系统（Linux；非 Linux 静默跳过）。
+    torch CPU 内存池不主动归还峰值，阶段卸载后不 trim 会让下一文件
+    的精度决策看到虚低可用内存（v2.66 实测：FP32 卸载后滞留 ~2GB，
+    导致下一个文件误走 bf16）。"""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _available_mem_mb() -> float | None:
     """Linux MemAvailable（可分配且不触发 swap 的内存，MB）；非 Linux/读取失败返回 None。"""
     try:
@@ -117,6 +129,7 @@ class AsrPipeline:
             self.diar.unload()
             self.diar = None
             gc.collect()
+            _malloc_trim()
             log.info("[pipeline] 卸载 Diarization 释放内存")
 
     def _unload_asr(self):
@@ -124,6 +137,7 @@ class AsrPipeline:
             self.asr.unload()
             self.asr = None
             gc.collect()
+            _malloc_trim()
             log.info("[pipeline] 卸载 ASR 释放内存")
 
     @staticmethod
@@ -223,21 +237,23 @@ class AsrPipeline:
         # (7) ASR — 对每个 diarization 段取音频做识别
         self._report(status_cb, "ASR 转录")
         try:
-            # v2.58：按"决策时可用内存 + 语音时长"动态分配加载精度（auto）
-            #   FP32 需要可用内存 >= fp32_min_avail_mb 且语音总量 <= fp32_max_speech_s，
-            #   否则 bf16 兜底防 OOM。比 v2.49 的"音频总时长 >= 30 分钟"更精准
-            #   （v2.57 语音裁剪后 ASR 峰值主要取决于模型本身，与文件大小/总时长相关性弱）。
+            # v2.58/v2.66：按"决策时刻可用内存"动态分配加载精度（auto）
+            #   FP32 需要可用内存 >= fp32_min_avail_mb（默认 12000MB），否则 bf16 兜底防 OOM。
+            #   v2.66 解除 v2.49 遗留的"语音总量 <= 30 分钟"限制：
+            #   语音裁剪（v2.57）+ 段长合并上限（v2.56）后 ASR 峰值由模型本身决定、
+            #   与语音总量弱相关，内存检查已是唯一护栏；卸载时 malloc_trim 归还池子，
+            #   避免上一文件 FP32 滞留内存压低本文件决策可用内存（实测滞留 ~2GB）。
             dtype = str(ASR_CONFIG.get("torch_dtype", "auto")).lower()
             avail_mb = None
             speech_s = sum(v.end_offset_s - v.start_offset_s for v in vad_segs)
             if dtype == "auto":
                 avail_mb = _available_mem_mb()
-                fp32_ok = (
-                    avail_mb is not None
-                    and avail_mb >= float(ASR_CONFIG.get("fp32_min_avail_mb", 13500))
-                    and speech_s <= float(ASR_CONFIG.get("fp32_max_speech_s", 1800))
+                dtype = (
+                    "float32"
+                    if avail_mb is not None
+                    and avail_mb >= float(ASR_CONFIG.get("fp32_min_avail_mb", 12000))
+                    else "bfloat16"
                 )
-                dtype = "float32" if fp32_ok else "bfloat16"
             log.info(
                 "[pipeline] ASR 精度决策：%s（可用内存 %s，语音 %.1f 分钟 / 音频 %.1f 分钟）",
                 dtype,
@@ -345,11 +361,7 @@ class AsrPipeline:
                 gc.collect()
                 # v2.56：把 glibc 空闲堆内存归还操作系统，避免 RSS 钉在高水位
                 # （实测长段 ASR 让 RSS 长期占满 16GB 导致 swap 假死）
-                try:
-                    import ctypes
-                    ctypes.CDLL("libc.so.6").malloc_trim(0)
-                except Exception:
-                    pass
+                _malloc_trim()
         self._unload_asr()
 
         if not rows:

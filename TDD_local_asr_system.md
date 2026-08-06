@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.65  
+**版本**: v2.66  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -26,7 +26,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                     用户交互层                               │
 │   手动处理 (process_inbox.py)   CLI (run.sh)   Web 看板      │
-│   └─ 看板按钮触发·递归扫描       └─ 单次处理      └─ 4 页    │
+│   └─ 看板按钮触发·递归扫描       └─ 单次处理      └─ 5 页    │
 │            │                            │            ▲      │
 │            │  触发 process_file()        │            │      │
 │            └──────────────┬─────────────┘            │      │
@@ -200,9 +200,9 @@ def apply_cluster_label(cluster_id, target):
 | Silero VAD (snakers4/silero-vad) | ~1MB | ~200MB | GitHub | >100× 实时 |
 | PyAnnote Diarization 3.1 (PyAnnote 4.x 库) | ~11MB | ~1-2GB | HuggingFace | ~2-3× 实时 |
 | PyAnnote Embedding (声纹) | ~98MB | ~200MB | HuggingFace | 秒级 |
-| Qwen3-ASR-1.7B | ~6.8GB (FP32) | ~12GB | HuggingFace / ModelScope | 约 1.11× 实时（v2.32 实测） |
+| Qwen3-ASR-1.7B | ~6.8GB (FP32) / ~3.4GB (bf16) | FP32 ~12-13GB；bf16 ~5.5GB | HuggingFace / ModelScope | FP32 约 1.11× 实时、bf16 约 3.14× 实时（v2.32 单段实测）；实际含逐段固定开销（v2.53，见 §3.4） |
 
-> **v2.32 精度口径（实测）**：1.7B 显式 **FP32** 加载（`torch_dtype=torch.float32`）。v2.31 曾试默认精度（实测为 **bfloat16**，CPU 无 AVX512-BF16 指令回退转换计算），速度 3.14× 实时、内存 5.2GB；FP32 有 oneDNN 优化，速度 **1.11× 实时**（93s 语音转录 103s）、峰值内存 **11.8GB**（16GB 系统留 ~4GB 余量）。内存红线已放宽至 **<12GB**（原 6GB）。若内存紧张可回退 bf16（移除 asr.py 的 torch_dtype 参数即可）。
+> **精度口径（v2.32 实测 / v2.66 现行）**：现行默认 **`auto` 动态分配**——决策时刻可用内存 ≥ `fp32_min_avail_mb`（默认 12000MB）→ FP32，否则 bf16（详见 §3.4）。历史实测（v2.32）：1.7B 显式 **FP32** 加载（`torch_dtype=torch.float32`）有 oneDNN 优化，速度 **1.11× 实时**（93s 语音转录 103s）、峰值内存 **11.8GB**；v2.31 曾用默认精度（实测为 **bfloat16**，CPU 无 AVX512-BF16 指令回退转换计算），速度 3.14× 实时、内存 5.2GB。内存红线已放宽至 **<12GB**（原 6GB）。
 
 > **⚠️ 性能数据边界（v2.55）**：本表为 **CPU 部署实测（i5-10210U）**，仅作本机回归基线；GPU 部署需重新实测，绝对数值不跨硬件外推。
 > **配置不跨硬件迁移**：当前系统受制于 CPU 和内存的限制，性能有限，当前的配置和使用方法，**不应该完整迁移到 GPU 系统**，而是要修改参数和适配（如加载精度、段合并/批处理、内存编排策略）；要根据实际的系统再调参数，达到最优效果。
@@ -225,6 +225,7 @@ def apply_cluster_label(cluster_id, target):
 
 - 完成 Diarization 后卸载其模型，再加载 ASR 模型
 - 每个音频处理结束后强制 GC（`gc.collect()`）
+- **卸载时归还空闲内存（v2.66）**：`_unload_asr`/`_unload_diar` 在 `gc.collect()` 后调用 `malloc_trim(0)`——torch CPU 内存池不主动归还峰值，不归还会让下一文件精度决策看到虚低可用内存（实测 FP32 卸载后滞留 ~2GB、下一文件误走 bf16）
 - 模型常驻/卸载策略可在 `MEMORY_CONFIG` 中调整
 
 ---
@@ -380,7 +381,7 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
 - 生成时 `max_new_tokens=512`；`generated_ids = generated[:, inputs["input_ids"].shape[1]:]` 截取新生成部分
 - 语言：`apply_transcription_request(audio=..., language=...)` 传 `zh` 强制中文，或 `None` 自动识别
 - `sampling_rate` 需放进 `processor_kwargs={"sampling_rate": sr}`（直接传会触发 warning）
-- 推理后端：Transformers（本地离线, **FP32**），不依赖 GPU/vLLM
+- 推理后端：Transformers（本地离线，**FP32/bf16 按决策自动**），不依赖 GPU/vLLM
 
 #### 精度决策与输入对齐（v2.31 踩坑 → v2.32 定稿）
 - **v2.31 曾用默认精度**：1.7B 权重默认 bf16，而 `apply_transcription_request` 产出的音频特征为 float32，直接推理报 `Input type (float) and bias type (c10::BFloat16) should be the same`。当时修复为按模型首层参数 dtype 自动对齐浮点输入：
@@ -393,13 +394,14 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
       }
   ```
 - **v2.32 定稿 FP32**：CPU 无 AVX512-BF16，bf16 回退转换计算慢（3.14× 实时）；FP32 有 oneDNN 优化（1.11× 实时），代价是权重 ~6.8GB、峰值内存 11.8GB（红线放宽至 <12GB）。上述对齐代码保留，fp32 下不触发，兼容将来默认精度模型。
-- **v2.58 精度动态分配（默认 auto，按"可用内存 + 语音时长"）**：`ASR_CONFIG["torch_dtype"]` 默认 **`auto`**——在 `pipeline.process_file` 第 (7) 步决策：**可用内存（`/proc/meminfo MemAvailable`）≥ `fp32_min_avail_mb`（默认 12000MB，v2.65 由 13500 下调）且 VAD 语音总量 ≤ `fp32_max_speech_s`（默认 1800s=30 分钟）→ `float32`**（oneDNN 优化 1.11× 实时，峰值 ~12-13GB）；否则 → `bfloat16`（内存约减半、3.14× 实时，稳定兜底）。依据：v2.57 语音裁剪后 ASR 峰值主要取决于模型本身（与文件大小/总时长相关性弱），故用"决策时刻可用内存 + VAD 已知的语音总量"比 v2.49 的"音频总时长 ≥30 分钟"更精准；`MemAvailable` 读取失败时保守走 bf16。环境变量可覆盖：`ASR_TORCH_DTYPE=float32|bfloat16|auto`、`ASR_FP32_MIN_AVAIL_MB=<MB>`、`ASR_FP32_MAX_SPEECH_S=<秒>`。背景：16GB 机器 FP32 峰值 ~15GB 曾两次 OOM（v2.48，当时分离段含静音）；v2.57 修复后峰值已可控，阈值可在实战中观测微调。**v2.65 实测微调**：16GB 机器（仅跑本任务）决策时可用内存稳定 12.7-13.3GB，13.5GB 阈值永不触发 → auto 全部 bf16（8 分钟语音 ASR 实测 ~57 分钟、约 7-8× 实时；bf16 每段 91-126s，与 v2.53 记录吻合）；下调至 12000MB 后稳定触发 FP32（峰值 ~12-13GB，留 ~1GB 余量），低于阈值仍回退 bf16。
+- **v2.58 精度动态分配（默认 auto，现行口径 v2.66 为"仅按可用内存"）**：`ASR_CONFIG["torch_dtype"]` 默认 **`auto`**——在 `pipeline.process_file` 第 (7) 步决策：**可用内存（`/proc/meminfo MemAvailable`）≥ `fp32_min_avail_mb`（默认 12000MB，v2.65 由 13500 下调）→ `float32`**（oneDNN 优化 1.11× 实时，峰值 ~12-13GB）；否则 → `bfloat16`（内存约减半、3.14× 实时，稳定兜底）。依据：v2.57 语音裁剪后 ASR 峰值主要取决于模型本身（与文件大小/总时长相关性弱），故用"决策时刻可用内存"比 v2.49 的"音频总时长 ≥30 分钟"更精准；`MemAvailable` 读取失败时保守走 bf16。环境变量可覆盖：`ASR_TORCH_DTYPE=float32|bfloat16|auto`、`ASR_FP32_MIN_AVAIL_MB=<MB>`。背景：16GB 机器 FP32 峰值 ~15GB 曾两次 OOM（v2.48，当时分离段含静音）；v2.57 修复后峰值已可控，阈值可在实战中观测微调。**v2.65 实测微调**：16GB 机器（仅跑本任务）决策时可用内存稳定 12.7-13.3GB，13.5GB 阈值永不触发 → auto 全部 bf16（8 分钟语音 ASR 实测 ~57 分钟、约 7-8× 实时；bf16 每段 91-126s，与 v2.53 记录吻合）；下调至 12000MB 后稳定触发 FP32（峰值 ~12-13GB，留 ~1GB 余量），低于阈值仍回退 bf16。
+- **v2.66 卸载归还内存（实战发现，pipeline.py §2.4）**：`_unload_asr`/`_unload_diar` 原只有 `del + gc.collect()`，torch CPU 内存池不主动归还峰值——实测 FP32 文件跑完后滞留 ~2GB（进程 RSS 7.4GB，旧 bf16 全程仅 ~5GB），下一文件决策时可用内存被压到 10.7GB（<12000）误走 bf16。修复：两处卸载统一走模块级 `_malloc_trim()`（`ctypes.CDLL("libc.so.6").malloc_trim(0)`，非 Linux 静默跳过；ASR 循环内每 8 段的既有调用同步改为该助手）。验证：终止批处理重启后，首文件决策恢复 float32（可用内存 12908MB）。
 - **v2.53 段合并根治（段开销 + 内存峰值）**：ASR 是**逐段转录**，每段固定开销（特征提取 + `generate` 启动 + 最多 512 token 解码）远大于内容转录——实测 FP32 ≈ **25-33s/段**（历史 ~5 分钟语音、20-32 段需 12-13 分钟，并非文档的 1.11× 实时），bf16 再乘 2.5-3×；且单文件 ASR 期间 torch CPU 内存池不归还峰值（实测从 5.3GB 涨到 14GB，逼近 OOM）。v2.53 修复：① **合并相邻短段**——`ASR_CONFIG.segment_merge_gap_s`（默认 1.5s）内间隔合并、合并后段长不超过 `segment_max_s`（默认 60s），把 140 段连续短语音合并到 ~6 段（实测），直接砍掉"段数 × 每段开销"这个主乘数，恢复 VAD 对 ASR 的收益（只花语音时长）；② 段长上限同时约束单段峰值内存；③ 每 8 段 `gc.collect()` 缓解高水位堆积；④ 合并段说话人取"起始分离段"的说话人；合并后每行时间戳为合并段起止（粒度变粗，如需句子级时间戳可后续启用 `return_timestamps` 细分）。环境变量：`ASR_SEGMENT_MERGE_GAP_S` / `ASR_SEGMENT_MAX_S`。
 - **v2.56 段长上限收紧 60s→15s + 内存归还 OS（关键修正）**：v2.53 实测发现**段长才是内存与耗时的主因**——58.6 分钟文件分离后仅 17 段、合并成 15 段，但 bf16 下 60s 长段**单段约 6 分钟**（0.7s/token 解码），总 ASR 92 分钟；且每段的大工作集（特征+激活）让 RSS **从开始就钉在 ~14.7GB**，16GB 机器满内存 + swap 假死。修正：① `segment_max_s` 默认 **60s → 15s**（单段生成 token 骤减，单段耗时与峰值内存都大幅下降；5.2 分钟语音预计 10-20 分钟完成）；② 每 8 段在 `gc.collect()` 后调用 **`malloc_trim(0)`**（Linux glibc）把空闲堆归还 OS，避免 RSS 长期钉在高水位；③ 仍可用环境变量 `ASR_SEGMENT_MAX_S` 调整（如大内存机器可放宽）。
 - **v2.54 设计原则（用户确认）**：**转录行不严格按说话人切分**——效率优先（系统处理时长短）优先于逐说话人粒度；声纹身份由 `speaker_clusters` 簇承载、不受转录行粒度影响（声纹匹配发生在 ASR 之前、按分离说话人聚合，一个说话人一个簇）；声纹标注可通过单人录音等其他途径（单人录音 → 一个分离说话人 → 一个簇/ID）。转录行粗粒度（合并段归属起始段说话人）是**刻意取舍**，不是缺陷。
 
-#### 离线加载（v2.18 修复 + v2.32 精度定稿）
-Qwen3-ASR 模型以**自定义解压目录**存放于 `MODELS_DIR/Qwen3-ASR-1.7B-hf/`（含 `config.json` / `model.safetensors` / `tokenizer.json` 等）。v2.32 起显式 `torch_dtype=torch.float32`（FP32 换取 CPU 速度，见上节）。
+#### 离线加载（v2.18 修复 + v2.66 精度动态口径）
+Qwen3-ASR 模型以**自定义解压目录**存放于 `MODELS_DIR/Qwen3-ASR-1.7B-hf/`（含 `config.json` / `model.safetensors` / `tokenizer.json` 等）。加载精度由调用方（pipeline auto 决策，见上节）传入；下例为显式 FP32 时的写法。
 
 ```python
 local_dir = MODELS_DIR / "Qwen3-ASR-1.7B-hf"
@@ -407,7 +409,7 @@ if local_dir.exists():
     # 完全离线：直接用本地目录加载（不再走 hub 缓存 / 联网）
     self.processor = AutoProcessor.from_pretrained(str(local_dir), token=hf_token)
     self.model = AutoModelForMultimodalLM.from_pretrained(
-        str(local_dir), torch_dtype=torch.float32, low_cpu_mem_usage=True, token=hf_token)
+        str(local_dir), torch_dtype=torch_dtype, low_cpu_mem_usage=True, token=hf_token)
 else:
     # 兜底：hub 缓存(local_files_only) → 联网
     ...
@@ -589,9 +591,11 @@ def move_to_error(src: Path, reason: str = "") -> None:
 PROJ_ROOT = ~/asr-local                     # 代码目录
 INBOX_DIR = ~/audio_inbox                    # 收件箱
 ARCHIVE_DIR = ~/audio_archive                # 归档根目录
-MODELS_DIR = Path(os.environ.get("HF_HOME", PROJ_ROOT / "models"))
+MODELS_DIR = Path(os.environ.get("HF_HOME", PROJ_ROOT / "model_cache"))
 DB_PATH = ARCHIVE_DIR / "transcripts.db"     # 数据库
 ```
+
+> 注：`model_cache` 为 settings.py 默认兜底（MacBook 无 .env 时用）；ThinkPad 生产环境由 `.env` 的 `HF_HOME=/home/kevin/asr_sys_local/asr-local/models` 覆盖（v2.37 口径：两端文件内容一致，差异仅来自 .env）。
 
 ### 5.2 音频格式
 
@@ -675,6 +679,7 @@ MEMORY_CONFIG = {
 | v2.21 | 2026-08-03 | **CLI 环境变量根治（默认路径残留）**: ① `run.sh` 启动时自动 `source .env`（`set -a` 导出生产环境变量）并**强制注入 `ASR_PROJ_ROOT`**，CLI 与 WebUI 共用同一套生产路径（§4.8）；② 根治未加载 `.env` 时 settings 走默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）在 HOME 下自动 `mkdir` 制造残留目录的问题——`~/audio_archive`、`~/asr-local/model_cache` 均已出现过并被清理（§4.8）；③ `.hf_token` 降级为无 `.env` 时的兜底 |
 | v2.22 | 2026-08-03 | **工程平铺重构 + GitHub 版本管理**: ① 目录平铺——`scripts/pkg_staging/` 套壳上提为单层工程根（config/scripts/src/systemd/run.sh/deploy_webui.sh），工程根 = git 仓库根 = 部署源，与 ThinkPad 生产布局一致（§4.8）；② 修复 `run.sh` 的 `PROJ_ROOT` 多退一层 bug（`SCRIPT_DIR/..` → `SCRIPT_DIR`，run.sh 与工程根同层），此前该 bug 使 run.sh 实际不可用（§4.8）；③ 修复 `deploy_webui.sh` 的 `LOCAL_ROOT`（去掉 `pkg_staging` 段）（§4.8）；④ 新增 GitHub 公开仓库 `Kevyn-2021/local-asr-sys`，`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型/`sample_audio`），MacBook 为唯一 git 源、ThinkPad 不纳入 git 继续 deploy 同步（§4.8）；⑤ 新增 README（强调本地运行、完全离线、数据不出本机） |
 | v2.23 | 2026-08-03 | **部署地址可配置 + 部署验证**: ① `deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<IP>` 环境变量覆盖（默认当前地址），ThinkPad 随网络环境切换时无需改脚本（§4.8）；② 平铺重构后重新部署验证——开发机与运行节点 18 个运行时文件 md5 全量一致、服务 active、`run.sh` PROJ_ROOT 修复在运行节点生效（§4.8） |
+| v2.24 | 2026-08-03 | **部署与访问环境说明（PRD FR-008）**: ① FR-008 补充**浏览器访问环境**（地址格式 `http://<ThinkPad当前IP>:8501`、办公室/家里/Tailscale 示例地址）与**部署环境**（SSH 地址、代码/数据目录、`deploy_webui.sh` 与 `ASR_REMOTE_HOST` 部署命令）；② 注明所列为**示例地址**，实际使用前需替换为 ThinkPad 当前真实 IP（敏感细节本机维护）；需求功能无变化 |
 | v2.25 | 2026-08-03 | **声纹阈值调低 + WebUI 流程面板输入/产出分行**: ① `VOICEPRINT_CONFIG` 三档阈值自 0.75/0.60 调低为 **0.65/0.50**（§3.3）——同一声纹跨录音相似度可能略低于 0.75 导致未自动关联，调低后提高自动关联成功率，误关联可由「校准已标注」（PRD FR-003-CLUSTER v2.20）手工改回；② WebUI「音频处理流程」面板 `.pipe-io` 改为纵向布局（输入/产出各占一行），输入格式列表按 `_FORMAT_PRIORITY` 优先级排序为 `wav / flac / m4a / mp3 / opus / ogg / webm`（§1.5） |
 | v2.26 | 2026-08-03 | **目录结构对齐生产布局**: ① git 仓库根由"代码平铺根"调整为与运行节点 `/home/kevin/asr_sys_local` **完全一致**的包裹结构——代码整体移入 `asr_sys_local/asr-local/`（= 部署源），数据目录 `audio_inbox/`、`audio_archive/` 以 `.gitkeep` 占位随仓库保留（内容不入库；`.gitignore` 原整目录忽略改为 `目录/*` + `!目录/.gitkeep` negate 规则）（§4.8）；② `deploy_webui.sh` 的 `LOCAL_ROOT` 随脚本自定位自动指向新根、`REMOTE_ROOT` 硬编码不变，部署逻辑无需改动（§4.8）；③ README 目录树同步为包裹结构；④ ThinkPad 生产布局本就如此，无物理改动，仅重新部署验证 |
 | v2.27 | 2026-08-03 | **文档上提一级目录 + 重命名**: ① PRD/TDD 由 `asr_sys_local/asr-local/` 移出至一级目录 `asr_sys_local/`，与 `asr-local`/`audio_archive`/`audio_inbox` 并列，并重命名为 **`PRD_local_asr_system.md` / `TDD_local_asr_system.md`**（英文文件名，避免中文文件名跨平台/链接转义问题）；② 全文索引同步——PRD↔TDD 互引链接、`file:///` 绝对路径（含 diarization.py 代码引用路径补 `asr_sys_local/asr-local` 段）全部更新为新文件名与新路径（§4.8）；③ README 目录树同步（§4.8） |
@@ -699,6 +704,8 @@ MEMORY_CONFIG = {
 | v2.46 | 2026-08-05 | **模型目录清理 + step2 下载口径重写（§4.6 / PRD §5.3、§6.1、§9、§11.3）**: ① **ThinkPad 模型目录清理**——删除 9 项冗余（step2 旧版松散目录 pyannote-speaker-diarization-3.1/pyannote-segmentation-3.0/pyannote-embedding、顶层旧 hub 缓存 models--pyannote--segmentation-3.0/wespeaker/community-1 残缺、silero-vad-ms、xet、hub 内 community-1）约 178M；② **PLDA 依赖事故与恢复**——删除 hub 内 community-1 后离线加载管线失败（`get_plda` 需 `pyannote/speaker-diarization-community-1/plda/xvec_transform.npz`），经 MacBook + `HF_ENDPOINT=https://hf-mirror.com` 的 `snapshot_download` 下载 33M 并用 tar 原样传回（保留 refs/snapshots 符号链接）恢复；离线加载验证通过（pipeline 3.1 / embedding / Silero VAD 全 OK）；③ **step2_download_models.sh 重写**——废弃 `huggingface-cli` 改 Python `snapshot_download`；pyannote 全部入 hub 缓存（speaker-diarization-3.1 / segmentation-3.0 / wespeaker / community-1 / embedding）；Qwen 保持自定义目录；Silero 预热固定 `torch.hub.set_dir(models/silero-vad)`（修掉旧版 TORCH_HOME 与 vad.py 目录不一致的隐患）；环境变量与 .env/settings.py 唯一口径（HF_HOME=models、HF_HUB_CACHE=models/hub）；④ 网络结论更新——hf-mirror 实测可用（HF_ENDPOINT），覆盖 v2.31/v2.35 旧结论；⑤ 部署验证：step2 同步 ThinkPad + 19 文件 md5 一致 + 离线加载实测通过 |
 | v2.47 | 2026-08-05 | **open_proxy 用法记录（迁移 SEC）+ 残留目录清理与防护（§4.6 / db.py）**: ① **open_proxy 机制记录并迁移**——开启/关闭/状态命令、内核位置、端口与环境变量口径移入 `SEC_local_asr_notes.md`（敏感信息不入库）；脚本化无 sudo 场景继续用 hf-mirror/开发机中转；② **清理错误路径残留**——`/home/kevin/audio_archive`（settings 默认路径 + 未加载 .env 时 connect 制造，含 0 字节 transcripts.db）已删除，确认无其他默认路径残留（`~/audio_inbox`/`~/asr-local` 等均不存在），正确路径 `asr_sys_local/audio_archive` 不受影响；③ **复发防护**——`db.py::connect()` 在"无显式 db_path + 默认 `~/audio_archive` + 未设 ASR_ARCHIVE"时向 stderr 告警，替代静默制造残留；④ 部署验证：db.py 同步运行节点 + 19 文件 md5 一致 |
 | v2.48 | 2026-08-05 | **ASR 加载精度可配置 + 大文件 OOM 兜底（settings.py §3.4 / asr.py / 运维）**: ① **事件**——运行节点处理 58.6 分钟大文件 `2026-08-04_14_07_26.wav` 两次被内核 OOM 杀死（WebUI 启动 11:02:59 峰值 14.6GB；standalone 13:30:54 峰值 14.96GB），均死在 ASR 转录阶段（FP32 模型 ~11.8GB + 波形/运行缓冲超出 16GB）；② **修复**——`ASR_CONFIG["torch_dtype"]` 支持环境变量 `ASR_TORCH_DTYPE` 覆盖（默认 `float32`，`bfloat16` 内存约减半），`asr.py` 三处加载统一走 `model_kwargs`；③ **恢复**——重置残留 status/锁，以 `ASR_TORCH_DTYPE=bfloat16` standalone 重启，VAD 拼接 58.6→5.2 分钟语音，内存可用 ~12GB 正常推进；④ **备注**——办公室网络可直连 huggingface.co（302），家网需代理/hf-mirror 兜底（网络环境规则本机维护）；定时脚本已改多 IP 尝试；⑤ 部署验证：asr.py/settings.py 两端 md5 一致，UI_VERSION 2026-08-05-15:15:05 |
+| v2.49 | 2026-08-05 | **ASR 精度默认改为 auto 动态分配（settings.py §3.4 / asr.py / pipeline.py）**: ① **默认 `auto`**——`pipeline.process_file` 按音频时长决策：≥1800s（30 分钟，可配 `ASR_TORCH_DTYPE_BIG_S`）→ bf16，否则 FP32；以 `torch_dtype` 参数传入 `QwenAsr`（不再只依赖环境变量）；② **asr.py**——构造函数新增 `torch_dtype` 参数（None 时读 settings，`auto` 兜底为 float32）；③ **pipeline.py**——第 (7) 步决策并记录 `[pipeline] ASR 精度决策：X（音频 Y 分钟）`；④ 阈值依据：FP32 成功最大 23.6 分钟、OOM 最小 58.6 分钟，30 分钟留余量；⑤ 部署验证：asr.py/pipeline.py/settings.py 两端 md5 一致 |
+| v2.50 | 2026-08-05 | **文件名时间提取格式三处统一（settings.py §3.5 / PRD FR-001-TS / TDD §3.5、§4.4）**: ① **实现修正**——紧凑式正则 `YYYYMMDD_HHMMSS` 的日期-时间分隔符由 `_` 放宽为 `[-_]`：新增识别 `recording-20260731-143052`、`20260731-143052-recording`（此前只能下划线）；② **文档统一**——PRD「支持的文件名格式」与 TDD §3.5 正则/§4.4 描述改为同一清单：长格式（六个字段 `[-_]` 任意混用，可带前后缀）/ 紧凑式（`[-_]` 均可，可带前后缀）/ ISO `YYYYMMDDTHHMMSS`；`re.search` 不锚定；③ 验证：8 种格式（含 7 种建议 + ISO）全部正确提取，无匹配样例（无时间数字串）正确返回 None |
 | v2.51 | 2026-08-05 | **敏感/个人信息去敏迁移（PRD/TDD → SEC_local_asr_notes.md，不入库）**: ① 新建 `SEC_local_asr_notes.md`（3 大写字母前缀，与 PRD/TDD 同风格），收录：ThinkPad 网络环境规则（办公室免代理直连 / 家网需 open_proxy）、open_proxy 用法、网络地址清单（办公室/家里/Tailscale IP）、访问设备型号、家庭声纹标注标签、3 款拾音设备特点与总结；② `.gitignore` 加入 `SEC_local_asr_notes.md`，不推送 GitHub；③ PRD/TDD 中性化——具体 IP/代理端口/设备型号/家庭人物称呼示例全部替换为中性描述并注明本机维护；④ 部署脚本默认地址、open_proxy 命令等敏感细节同步迁移；⑤ 校验：git 跟踪文件不再含上述具体 IP/代理端口/家庭称呼 |
 | v2.52 | 2026-08-05 | **消除 PRD/TDD 对 SEC 的引用（GitHub 死链修复，文档自洽）**: ① 移除 PRD/TDD 中所有 `SEC_local_asr_notes.md` 链接与"见 SEC 文档"引导（该文件不入库，GitHub 上不存在，避免读者点死链）；② 相关表述改为自洽中性文案——"本机维护、不随仓库发布"；③ 变更日志中保留对本次迁移的历史记录（纯文本文件名，无链接）；④ README 补充说明：敏感运维细节（网络地址/代理/个人标签）本地维护、不随仓库发布；⑤ 校验：PRD/TDD 中无任何指向不入库文件的链接 |
 | v2.53 | 2026-08-05 | **ASR 段合并根治（pipeline.py §3.4 / settings.py）**: ① **问题**——58.6 分钟文件（VAD 140 段、语音 5.2 分钟）bf16 ASR 跑了 89 分钟仍未完成：逐段固定开销（~25-33s/段 FP32）被 bf16 放大（~2.5-3×），时间 ≈ 段数 × 每段开销；且单文件 ASR 内存从 5.3GB 涨到 14GB（torch CPU 内存池不还峰值），逼近 OOM；② **修复**——ASR 前合并相邻短段（间隔 ≤ `segment_merge_gap_s` 默认 1.5s，合并后段长 ≤ `segment_max_s` 默认 60s）：140 段连续短语音实测合并到 6 段，直接砍掉主乘数，恢复 VAD 对 ASR 的收益；段长上限同时约束单段峰值内存；每 8 段 `gc.collect()`；③ **行为变化**——合并段每行时间戳为合并段起止、说话人取起始分离段（粒度变粗，句子级时间戳留待 `return_timestamps` 细分）；④ **终止与恢复**——终止了 89 分钟的 bf16 运行（SIGTERM 未响应→SIGKILL+手动重置 status/锁），收件箱文件保留待用户手动重跑；⑤ 验证：合并逻辑本地单测通过（连续短段 140→6、分散长段不合并、超上限不合并）；部署验证：pipeline.py/settings.py 两端 md5 一致 |
@@ -714,8 +721,7 @@ MEMORY_CONFIG = {
 | v2.63 | 2026-08-06 | **导航加宽/字距 + 白名单分组（webui.py §4.7 / PRD FR-008-A）**: ① `div[role="radiogroup"]` 加 `gap:6px`，nav button 加 `padding: 0 1.5rem`（!important）+ `letter-spacing: 0.02em`——实测 4 字页签 90→107px、数据库 76→93px（仍按文字自适应）；② 「访问控制」页白名单分组：**固定放行（不可删除）置顶、设备白名单（可新增/移除）置底**，两组间留白，新增表单保持面板底部；③ 验证：headless Chrome 实测宽度/padding/gap/字距 + 页面元素顺序（固定组在设备组之前、新增表单最后） |
 | v2.64 | 2026-08-06 | **导航去缝隙 + 白名单行对齐（webui.py §4.7 / PRD FR-008-A）**: ① 移除 radiogroup 的 `gap:6px`（页签恢复无缝连续外观，实测相邻按钮间距 -1px≈0）；tab 内文字 `letter-spacing` 0.02em→**0.05em**（实测 0.7px），宽度仍 109/94px；② 白名单每行改 `st.columns([1.2, 3.2, 1], vertical_alignment="center")`——实测「移除」按钮与左侧 IP 中心 Y 完全一致（diff=0）；③ 验证：headless Chrome 实测宽度/缝隙/字距/按钮对齐，UI_VERSION 2026-08-06-16:01:55 |
 | v2.65 | 2026-08-06 | **ASR FP32 阈值按实测微调（settings.py §3.4 / PRD FR-004）**: ① 实战发现——16GB 机器（仅跑本任务）决策时可用内存稳定 12.7-13.3GB，`fp32_min_avail_mb` 默认 13500MB **永不触发**，auto 全部走 bf16；11 文件批处理实测：ASR 阶段 8 分钟语音文件 ~57 分钟、18 分钟语音文件 ~107 分钟（约 7-8× 实时），bf16 每段 91-126 秒（与 v2.53 记录 62-99s/段同量级）；② `fp32_min_avail_mb` 默认 **13500→12000MB**——FP32 峰值 ~12-13GB（v2.32/v2.58 实测）、决策时可用内存稳定 ≥12.7GB，留 ~1GB 余量；可用内存低于阈值仍自动回退 bf16；③ 决策时机说明——精度决策发生在音频加载/VAD/分离/声纹引擎之后，MemAvailable 已扣掉该音频的波形占用，音频越大天然越保守；④ 部署验证：settings.py 两端 md5 一致，终止旧批重启生效 |
-| v2.49 | 2026-08-05 | **ASR 精度默认改为 auto 动态分配（settings.py §3.4 / asr.py / pipeline.py）**: ① **默认 `auto`**——`pipeline.process_file` 按音频时长决策：≥1800s（30 分钟，可配 `ASR_TORCH_DTYPE_BIG_S`）→ bf16，否则 FP32；以 `torch_dtype` 参数传入 `QwenAsr`（不再只依赖环境变量）；② **asr.py**——构造函数新增 `torch_dtype` 参数（None 时读 settings，`auto` 兜底为 float32）；③ **pipeline.py**——第 (7) 步决策并记录 `[pipeline] ASR 精度决策：X（音频 Y 分钟）`；④ 阈值依据：FP32 成功最大 23.6 分钟、OOM 最小 58.6 分钟，30 分钟留余量；⑤ 部署验证：asr.py/pipeline.py/settings.py 两端 md5 一致 |
-| v2.50 | 2026-08-05 | **文件名时间提取格式三处统一（settings.py §3.5 / PRD FR-001-TS / TDD §3.5、§4.4）**: ① **实现修正**——紧凑式正则 `YYYYMMDD_HHMMSS` 的日期-时间分隔符由 `_` 放宽为 `[-_]`：新增识别 `recording-20260731-143052`、`20260731-143052-recording`（此前只能下划线）；② **文档统一**——PRD「支持的文件名格式」与 TDD §3.5 正则/§4.4 描述改为同一清单：长格式（六个字段 `[-_]` 任意混用，可带前后缀）/ 紧凑式（`[-_]` 均可，可带前后缀）/ ISO `YYYYMMDDTHHMMSS`；`re.search` 不锚定；③ 验证：8 种格式（含 7 种建议 + ISO）全部正确提取，无匹配样例（无时间数字串）正确返回 None |
+| v2.66 | 2026-08-06 | **解除 ASR 语音时长限制 + 卸载归还内存（settings.py §3.4 / pipeline.py §2.4 / PRD FR-004）**: ① **解除"VAD 语音总量 ≤1800s"限制**——删除 `fp32_max_speech_s` 配置与决策条件（v2.57 裁剪 + v2.56 段长封顶后 ASR 峰值由模型决定、与语音总量弱相关，内存检查即唯一护栏；语音总量只影响耗时）；② **卸载归还内存**——新增模块级 `_malloc_trim()` 并在 `_unload_asr`/`_unload_diar` 卸载后调用（ASR 循环内每 8 段既有调用改为复用）；实测 FP32 卸载后 torch CPU 池滞留 ~2GB、下一文件决策可用内存虚低（10.7GB）误走 bf16，修复后重启首文件恢复 float32（12908MB）；③ 五端协同——PRD/TDD/SEC/代码/运行节点同步（SEC 无敏感信息变化无需改）；④ 部署验证：pipeline.py/settings.py 两端 md5 一致，终止旧批重启生效 |
 
 ---
 

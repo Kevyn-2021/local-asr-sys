@@ -94,22 +94,23 @@ ASR_CONFIG = {
     "use_flash_attn":    False,   # CPU 环境关闭
     "language":          "zh",
     "return_timestamps": True,
-    # v2.58：加载精度默认 "auto"——按"决策时可用内存 + 语音时长"动态分配：
-    #   可用内存 >= fp32_min_avail_mb（默认 12000MB = 12GB，v2.65 由 13500 微调）且 语音时长 <= fp32_max_speech_s（默认 1800s = 30 分钟）
+    # v2.58/v2.66：加载精度默认 "auto"——按"决策时刻可用内存"动态分配：
+    #   可用内存 >= fp32_min_avail_mb（默认 12000MB = 12GB，v2.65 由 13500 微调）
     #       → float32（oneDNN 优化 1.11× 实时，峰值 ~12-13GB）
     #   否则 → bfloat16（内存约减半、3.14× 实时，稳定兜底）
-    # 判断依据：v2.57 语音裁剪后单段工作集已压小，ASR 峰值主要取决于模型本身（与文件大小/总时长相关性弱），
-    # 所以用"决策时刻的 MemAvailable + VAD 语音总量"比 v2.49 的"音频总时长 ≥30 分钟"更精准。
+    # 判断依据：v2.57 语音裁剪 + v2.56 段长合并上限后单段工作集有界，ASR 峰值主要取决于模型本身
+    # （与文件大小/总时长相关性弱），所以用"决策时刻的 MemAvailable"作唯一判断即可。
+    # v2.66 解除 v2.49 遗留的"语音总量 ≤30 分钟"限制（该限制与 v2.57 后的实测结论矛盾，
+    #   语音总量只影响耗时不影响峰值内存）；卸载阶段 malloc_trim 归还 torch CPU 池，
+    #   避免上一文件滞留内存压低下一次决策的可用内存（实测 FP32 卸载后滞留 ~2GB）。
     # v2.65 实测微调：16GB 机器（仅跑本任务）决策时可用内存稳定 12.7-13.3GB，原阈值 13.5GB 永不触发
     #   → auto 全部走 bf16（8 分钟语音 ASR 实测 ~57 分钟，约 7-8× 实时）；下调至 12000MB 后稳定触发 FP32
     #   （峰值 ~12-13GB，留 ~1GB 余量）；可用内存低于阈值时仍自动回退 bf16，安全兜底不变。
     # 可用环境变量覆盖：
     #   ASR_TORCH_DTYPE=float32|bfloat16|auto
     #   ASR_FP32_MIN_AVAIL_MB=<MB>      （FP32 所需最小可用内存）
-    #   ASR_FP32_MAX_SPEECH_S=<秒>      （FP32 允许的最大语音时长）
     "torch_dtype":          os.environ.get("ASR_TORCH_DTYPE", "auto"),
     "fp32_min_avail_mb":    float(os.environ.get("ASR_FP32_MIN_AVAIL_MB", "12000")),
-    "fp32_max_speech_s":    float(os.environ.get("ASR_FP32_MAX_SPEECH_S", "1800")),
     # v2.53/v2.56：ASR 段合并——逐段固定开销远大于内容转录，段数越多越慢，合并相邻短段砍段数；
     # 段长上限是关键：单段越长，生成 token 越多、解码越慢、内存工作集越大（实测 bf16 下 60s 段
     # 单段约 6 分钟，进程 RSS 钉在 ~14.7GB，16GB 机器满内存+swap 假死）。

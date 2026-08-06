@@ -11,7 +11,7 @@ A fully **local, offline** audio transcription and speaker identification system
 
 ## Features
 
-- **Speech-to-text**: Qwen3-ASR-1.7B multimodal model, offline CPU inference (FP32), Chinese and multi-language/dialect support
+- **Speech-to-text**: Qwen3-ASR-1.7B multimodal model, offline CPU inference (precision auto-selected: FP32 when memory allows, bf16 otherwise), Chinese and multi-language/dialect support
 - **Speaker diarization**: pyannote diarization, automatically splits audio into different speakers
 - **Voiceprint identification & continuous learning**: pyannote embedding identifies known speakers; unrecognized speakers are persisted as `unknown_XXXX` labels — annotate the name once in the Web UI and the system keeps learning, getting more accurate over time
 - **Voice activity detection**: Silero VAD, transcribes only speech segments and skips silence
