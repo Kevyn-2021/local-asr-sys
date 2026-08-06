@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.72  
+**版本**: v2.73  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -730,6 +730,7 @@ MEMORY_CONFIG = {
 | v2.70 | 2026-08-06 | **两处 UI 微调（webui.py §PRD8.2 页2/页3）**: ① 「音频处理记录」表格改为倒序显示（`rows` 构建按源音频时间升序保证编号 1 = 最远，展示时 `list(reversed(rows))` 让最大编号在最上方）；② 「声纹怎么来的」面板移除结尾句前的 `<br>`，标注学习循环说明并入同一段落；③ 部署验证：webui.py 两端 md5 一致 |
 | v2.71 | 2026-08-06 | **三处 UI 微调（webui.py §PRD8.2 页2/页3/页5）**: ① 「访问控制」白名单行的「固定」由 `st.caption` 改为全宽居中 `<div>`，「移除」按钮加 `use_container_width=True`——两者同宽居中，消除按钮偏向右侧的错位感；② 「音频处理记录」面板说明去掉「，不再拆分片段」；③ 「声纹簇·标注学习」面板说明去掉「（原「处理记录」页说话人筛选已并入）」；④ 部署验证：webui.py 两端 md5 一致 |
 | v2.72 | 2026-08-06 | **五端一致性 Review（文档工程 / ThinkPad 同步）**: ① §1.7 UI 描述改写为 v2.68/69 单流程（说话人下拉-发言列表-试听-标注操作区），收敛与 PRD §8.2 页 3 的重复、只留实现要点；「确认标注并回填」按钮名统一为「标注并回填」；§4.7 补 v2.71 白名单水平对齐要点；② **ThinkPad 工程文件全量 md5 比对**——部署脚本 18 个运行时文件 + settings.py 全部一致；systemd/asr-webui.service 与 install_services.sh 存在历史漂移（旧 User/Group 行、旧路径 HF_HOME=asr-local/model_cache、旧 ufw 逻辑、缺白名单参数），已从仓库同步覆盖；/usr/local/sbin/asr-webui-fw.sh 与仓库仅注释措辞差异、行为一致（均读 /etc/asr-webui-fw.conf 的 FIXED_IPS）；deploy_webui.sh 为 Mac 侧工具按设计不同步；③ 版本头部与变更日志两两核对一致（v1.0→v2.72） |
+| v2.73 | 2026-08-06 | **清理 RustDesk 残留目录（ThinkPad 运维）**: ① 复核——`~/rustdesk_remove_20260806/` 仅含 RustDesk 运行日志（约 496KB，tray/password/check-hwcodec-config 等子目录），无进程/无 dpkg 包/无 systemd 服务/无常见残留配置目录/21115-21119 与 3389 端口未监听；② 确认无用后删除该目录，复核通过；③ 五端协同：SEC 与交接文档同步更新（本地维护），PRD/TDD changelog 记录 |
 
 ---
 
