@@ -45,6 +45,14 @@ echo "$SUDO_PW" | sudo -S loginctl enable-linger "$USER"
 for ip in ${ASR_WEB_ALLOW_IPS}; do
   ( echo "$SUDO_PW" | sudo -S ufw allow from "$ip" to any port 8501 proto tcp comment "ASR WebUI (allowlisted device)" ) || true
 done
+# v2.61: 安装 WebUI 白名单管理脚本 + sudoers NOPASSWD（仅限该脚本；WebUI「访问控制」页增删 IP 用）
+FW_HELPER_SRC="$HERE/asr-webui-fw.sh"
+if [ -f "$FW_HELPER_SRC" ]; then
+  ( echo "$SUDO_PW" | sudo -S install -m 0755 -o root -g root "$FW_HELPER_SRC" /usr/local/sbin/asr-webui-fw.sh ) || true
+  ( echo "$SUDO_PW" | sudo -S bash -c 'grep -q asr-webui-fw.sh /etc/sudoers.d/asr-webui-fw 2>/dev/null || printf "kevin ALL=(root) NOPASSWD: /usr/local/sbin/asr-webui-fw.sh\n" > /etc/sudoers.d/asr-webui-fw; chmod 440 /etc/sudoers.d/asr-webui-fw; visudo -c' ) || true
+fi
+# SSH 22 放行：ufw 默认 deny incoming，必须显式放行，否则部署/管理会断连（v2.61 明确）
+( echo "$SUDO_PW" | sudo -S ufw allow 22/tcp comment "SSH" ) || true
 echo "$SUDO_PW" | sudo -S ufw --force enable 2>/dev/null || true
 
 echo ""

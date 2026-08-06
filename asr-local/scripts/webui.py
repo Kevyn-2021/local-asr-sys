@@ -1,10 +1,11 @@
 """
 Streamlit Web Dashboard — PRD FR-008
-4 个页面：概览 / 处理记录 / 声纹库·数据库 / 搜索·文件
+5 个页面：状态概览 / 处理记录 / 数据库 / 文件归档 / 访问控制
 
 UI v2.0 — KVI 视觉风格重构：
 - 导航：st.segmented_control 分段控件，每个页签是独立区块，不再依赖脆弱的 CSS 覆盖
-- 顶部锁定导航条（v2.41 定稿）：页首单行（Local ASR System + 北京时间）与页签同排，整条吸顶，滚动时始终可见
+- 顶部锁定导航条（v2.41 定稿 / v2.61 调整）：页首单行（Local ASR System 品牌）与 5 个等宽页签同排，
+  整条吸顶，滚动时始终可见；北京时间移到首页「北京时间」面板（导航条下方第一个面板）
 - 布局：st.container(border=True) 面板，面板头部 = 标题 + 分隔线，区块边界明确
 - 排版：代码块行高锁定 1.5；搜索/文件浏览上下堆叠；文本预览限高滚动
 - 色彩：灰阶为基（85%），暖赭 #b86a48 作唯一强调色（5%）
@@ -15,6 +16,7 @@ UI v2.0 — KVI 视觉风格重构：
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import os
 import subprocess
@@ -56,7 +58,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-06-12:18:16"
+UI_VERSION = "2026-08-06-14:49:36"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）
@@ -133,15 +135,12 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
    关键：sticky 元素的 margin 区域是透明的，下层内容滚动时会从 margin 处透出，
    所以吸顶条的留白一律用 padding；标题/导航自身的 margin 在此置 0。 */
 .topbar-title {
-    display: flex; flex-direction: row; align-items: baseline; gap: 12px;
+    display: flex; flex-direction: row; align-items: baseline;
     padding-left: 0.5rem;   /* 品牌块整体右移，避免贴着左边界（v2.40） */
-    white-space: nowrap;     /* 单行布局：标题与北京时间不换行（v2.41） */
+    white-space: nowrap;     /* 单行布局：仅品牌名（北京时间 v2.61 起移到首页面板） */
 }
 .topbar-brand {
     font-size: 1.05rem; font-weight: 600; color: var(--fg-0);  /* 与面板标题字号一致（v2.41） */
-}
-.topbar-time {
-    font-size: 0.82rem; color: var(--fg-3); font-weight: 400;
 }
 
 /* 吸顶条：用 :has(.topbar-title) 定位"页首+导航"所在的行容器
@@ -164,14 +163,15 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
     margin-bottom: 0 !important;
 }
 
-/* ── 分段导航 ──
+/* ── 分段导航（5 个页签等宽，v2.61）──
    Streamlit 1.60 渲染为 div[role="radiogroup"] + button（stSegmentedControl label 结构已不存在）；
    老版本 stSegmentedControl label 规则保留在下方 */
-.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button {
-    cursor: pointer; min-width: 8.5em;
-}
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] {
     margin-left: 0.75rem;   /* 导航整体往右一点点（v2.41） */
+    display: flex; width: 100%;   /* 占满导航列，子按钮等宽（v2.61） */
+}
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button {
+    cursor: pointer; flex: 1 1 0; min-width: 0;   /* 等宽：按可用宽度平均分配（v2.61） */
 }
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"],
 .block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stLayoutWrapper"]:has(.topbar-title) div[role="radiogroup"] button[aria-checked="true"] * {
@@ -180,8 +180,21 @@ div[data-testid="stAlert"] p { color: var(--fg-1) !important; }
     font-weight: 600;
 }
 div[data-testid="stSegmentedControl"] label {
-    min-width: 8.5em;
+    min-width: 0;
 }
+
+/* 北京时间面板（v2.61：首页导航条下方第一个面板） */
+.clock-line { font-size: 1.55rem; font-weight: 600; color: var(--fg-0); letter-spacing: 0.02em; }
+.clock-tz { font-size: 0.85rem; font-weight: 400; color: var(--fg-3); }
+
+/* 访问控制页 · 端口说明表格 */
+.port-table { width: 100%; border-collapse: collapse; }
+.port-table th, .port-table td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line-subtle);
+    font-size: 0.92rem; vertical-align: top;
+}
+.port-table th { color: var(--fg-2); font-weight: 600; }
+.port-table code { background: var(--bg-subtle); padding: 1px 6px; border-radius: 4px; }
 
 /* ── 面板（border 容器） ──
    边框/背景/圆角全部交给 Streamlit 原生 border=True 容器渲染（上一版视觉正常）。
@@ -1061,17 +1074,128 @@ def render_segment_audio(row: dict):
         st.info("该片段无对应音频文件")
 
 
+# ========== 访问控制辅助 ==========
+
+FW_HELPER = "/usr/local/sbin/asr-webui-fw.sh"
+FW_FIXED = {"100.64.0.0/10", "127.0.0.1"}
+
+
+def _valid_ipv4(text: str) -> bool:
+    try:
+        ipaddress.IPv4Address(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _fw_list():
+    """返回 8501 端口白名单规则列表；helper 不可用时返回 None。"""
+    try:
+        out = subprocess.run(
+            ["sudo", "-n", FW_HELPER, "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    rules = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        ip = parts[0]
+        comment = line.split("#", 1)[1].strip() if "#" in line else ""
+        rules.append({"ip": ip, "comment": comment, "fixed": ip in FW_FIXED})
+    return rules
+
+
+def _fw_apply(action: str, ip: str):
+    """调用特权 helper 增/删白名单，返回 (ok, message)。"""
+    try:
+        out = subprocess.run(
+            ["sudo", "-n", FW_HELPER, action, ip],
+            capture_output=True, text=True, timeout=15,
+        )
+        return out.returncode == 0, (out.stdout or out.stderr).strip()
+    except Exception as exc:
+        return False, f"执行失败：{exc}"
+
+
+def render_access_control():
+    """页 5「访问控制」：IP 白名单管理 + 端口说明（PRD FR-008-A，v2.61）。"""
+    c = panel("IP 白名单 · 网页访问", "端口 8501 仅放行以下来源；Tailscale 网段固定放行、不可删除")
+    with c:
+        rules = _fw_list()
+        if rules is None:
+            st.warning("无法读取防火墙白名单：ThinkPad 未安装管理脚本（/usr/local/sbin/asr-webui-fw.sh + "
+                       "sudoers NOPASSWD）。详见 TDD v2.61「访问控制」；安装后刷新本页即可。")
+        else:
+            if not rules:
+                st.info("当前白名单为空（仅 Tailscale 网段可访问）。")
+            for r in rules:
+                col_ip, col_desc, col_op = st.columns([1.2, 3.2, 1])
+                with col_ip:
+                    st.markdown(f"<code>{html.escape(r['ip'])}</code>", unsafe_allow_html=True)
+                with col_desc:
+                    st.markdown(html.escape(r["comment"]) or "—")
+                with col_op:
+                    if r["fixed"]:
+                        st.caption("固定")
+                    elif st.button("移除", key=f"fw_rm_{r['ip']}"):
+                        ok, msg = _fw_apply("remove", r["ip"])
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                        st.rerun()
+            st.divider()
+            col_in, col_btn = st.columns([2.4, 1])
+            new_ip = col_in.text_input("新增白名单 IP", placeholder="例如 192.168.3.20", key="fw_new_ip")
+            if col_btn.button("添加", type="primary"):
+                ip = new_ip.strip()
+                if not _valid_ipv4(ip):
+                    st.error("请输入合法的 IPv4 地址")
+                else:
+                    ok, msg = _fw_apply("add", ip)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                    st.rerun()
+        st.caption("提示：常用设备接入 Tailscale 后无需加白名单；若误删当前设备 IP 导致无法打开本页，"
+                   "请用 SSH 登录 ThinkPad 或改走 Tailscale 恢复。")
+
+    c = panel("端口说明", "ThinkPad 对外服务的端口与用途")
+    with c:
+        st.markdown(
+            "<table class='port-table'>"
+            "<thead><tr><th>端口</th><th>服务</th><th>用途</th></tr></thead>"
+            "<tbody>"
+            "<tr><td><code>22/tcp</code></td><td>SSH</td>"
+            "<td>开发机（MacBook）远程管理 ThinkPad、部署代码："
+            "<code>ssh kevin@&lt;ThinkPad当前IP&gt;</code></td></tr>"
+            "<tr><td><code>8501/tcp</code></td><td>Web UI</td>"
+            "<td>浏览器访问本管理界面：<code>http://&lt;ThinkPad当前IP&gt;:8501</code>，"
+            "或 Tailscale 地址 <code>http://&lt;ThinkPad-Tailscale-IP&gt;:8501</code></td></tr>"
+            "</tbody></table>",
+            unsafe_allow_html=True,
+        )
+        st.caption("远程桌面端口（3389 / RustDesk 21115-21119）已关闭：ThinkPad 不再提供远程桌面服务（v2.61）。")
+
+
 # ========== 页面 ==========
 
-NAV_OPTIONS = ["概览 · 状态", "处理记录", "声纹库 · 数据库", "搜索 · 文件"]
+NAV_OPTIONS = ["状态概览", "处理记录", "数据库", "文件归档", "访问控制"]
 
-# ── 顶部锁定导航条：页首（标题+时间同排）与导航同排，整条吸顶（CSS） ──
-col_brand, col_nav = st.columns([1.2, 1.8], gap="medium")
+# ── 顶部锁定导航条：品牌 + 5 个等宽页签同排，整条吸顶（CSS） ──
+#   北京时间 v2.61 起移到首页「北京时间」面板，顶栏只保留品牌名
+col_brand, col_nav = st.columns([1.0, 2.4], gap="medium")
 with col_brand:
     st.markdown(
         f"<div class='topbar-title'>"
         f"<span class='topbar-brand'>Local ASR System</span>"
-        f"<span class='topbar-time'>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 北京时间</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -1090,9 +1214,9 @@ if page is None:
     page = NAV_OPTIONS[0]
 
 # ================================================================
-# 页 1 — 概览 · 状态
+# 页 1 — 状态概览
 # ================================================================
-if page == "概览 · 状态":
+if page == "状态概览":
     state, st_dict = derive_state()
 
     # 处理中或刚失败时 15 秒自动刷新，平时 10 分钟（v2.18 由 5 秒放宽，避免过于频繁）
@@ -1102,6 +1226,16 @@ if page == "概览 · 状态":
         st_autorefresh(interval=15_000 if busy_now else 600_000, key="overview_refresh")
     except ImportError:
         pass
+
+    # 北京时间面板：导航条下方第一个面板（v2.61 起从顶栏移入，仅首页展示）
+    c = panel("北京时间", "系统时钟 · Asia/Shanghai (UTC+8)")
+    with c:
+        now = datetime.now()
+        st.markdown(
+            f"<div class='clock-line'>{now.strftime('%Y-%m-%d %H:%M:%S')}　"
+            f"<span class='clock-tz'>北京时间</span></div>",
+            unsafe_allow_html=True,
+        )
 
     render_state_bar(state)
     render_state_detail(state, st_dict)
@@ -1351,9 +1485,9 @@ elif page == "处理记录":
             render_segment_audio(row)
 
 # ================================================================
-# 页 3 — 声纹库 · 数据库
+# 页 3 — 数据库
 # ================================================================
-elif page == "声纹库 · 数据库":
+elif page == "数据库":
     c = panel("声纹怎么来的", "不需要专门录入——处理音频时自动抓取，你负责标注")
     with c:
         st.markdown(
@@ -1621,9 +1755,9 @@ elif page == "声纹库 · 数据库":
                 st.json(r)
 
 # ================================================================
-# 页 4 — 搜索 · 文件
+# 页 4 — 文件归档
 # ================================================================
-elif page == "搜索 · 文件":
+elif page == "文件归档":
     init_fts()  # 首次自动重建中文分词索引（已有则秒回）
     c = panel("搜索转录文本", "全文检索 + 说话人 + 时间范围")
     with c:
@@ -1741,6 +1875,12 @@ elif page == "搜索 · 文件":
                         )
                     except Exception:
                         st.warning("无法读取该文件")
+
+# ================================================================
+# 页 5 — 访问控制
+# ================================================================
+elif page == "访问控制":
+    render_access_control()
 
 # ── 页脚（版本时间戳：确认 ThinkPad 上部署的是否为最新代码） ──
 st.markdown(
