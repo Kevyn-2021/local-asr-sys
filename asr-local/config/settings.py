@@ -41,6 +41,10 @@ FILENAME_TIME_PATTERNS = [
     r"(?P<Y>\d{4})(?P<M>\d{2})(?P<D>\d{2})[-_](?P<h>\d{2})(?P<m>\d{2})(?P<s>\d{2})",
     # 3) ISO 风格 T 分隔（兼容保留）：voice_note_20260731T143052Z
     r"(?P<Y>\d{4})(?P<M>\d{2})(?P<D>\d{2})T(?P<h>\d{2})(?P<m>\d{2})(?P<s>\d{2})",
+    # 4) 全紧凑式：YYYYMMDDHHMMSS 14 位无分隔（v2.74 新增）
+    #    Note-20260806152345 / voice_20260806152345 / 20260806152345-录音
+    #    前后加 (?<!\d)/(?!\d) 避免从更长的纯数字串中截取
+    r"(?<!\d)(?P<Y>\d{4})(?P<M>\d{2})(?P<D>\d{2})(?P<h>\d{2})(?P<m>\d{2})(?P<s>\d{2})(?!\d)",
 ]
 ORGANIC_OUTPUT_FORMAT = "absolute"  # absolute | relative | both
 

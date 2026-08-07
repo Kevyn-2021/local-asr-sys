@@ -75,27 +75,39 @@ def init_fts(db_path: Path | None = None) -> int:
 
 
 def sync_segments(segments, db_path: Path | None = None) -> None:
-    """insert_segments 后调用：把新插入的行同步进 FTS（按 text 反查 id）"""
+    """insert_segments 后调用：把新插入的行同步进 FTS（取本文件最新插入的 id 段）
+
+    v2.74 修复：原实现按 (file_hash, text) 反查 id 取最新一条，同一文件内出现
+    两条相同文本时两个片段会命中同一 id，第二次 INSERT 触发 FTS5 rowid 唯一约束
+    → "constraint failed"（仅告警，转录不受影响但索引缺行）。改为按 file_hash
+    取最新 len(rows) 个 id 与本次插入行一一对应，并用 INSERT OR REPLACE 幂等写入。
+    """
     from .db import connect
     rows = list(segments)
     if not rows:
         return
     with connect(db_path) as conn:
         conn.execute(_DDL)
-        # 取刚插入的最大 id 起的新行（按 text 匹配更稳，但量大时按 id 范围更快；
-        # 这里用 file_hash + text 精确对应，避免误判）
+        by_file: dict[str, list] = {}
         for r in rows:
-            fid = getattr(r, "file_hash", None)
-            txt = getattr(r, "text", "")
-            if not txt:
+            by_file.setdefault(getattr(r, "file_hash", None), []).append(r)
+        data: list[tuple[int, str]] = []
+        for fid, rlist in by_file.items():
+            if not fid:
                 continue
-            row = conn.execute(
-                "SELECT id FROM transcripts WHERE file_hash=? AND text=? "
-                "ORDER BY id DESC LIMIT 1", (fid, txt)).fetchone()
-            if row:
-                conn.execute(
-                    f"INSERT INTO {FTS_TABLE}(rowid, seg_text) VALUES (?, ?)",
-                    (row["id"], tokenize(txt)))
+            # 本次批处理 = 该 file_hash 最新插入的 len(rlist) 行（单进程顺序插入）
+            ids = [row["id"] for row in conn.execute(
+                "SELECT id FROM transcripts WHERE file_hash=? ORDER BY id DESC LIMIT ?",
+                (fid, len(rlist)))]
+            ids.reverse()  # DESC 反转回插入顺序，与 rows 一一对应
+            for rid, r in zip(ids, rlist):
+                txt = getattr(r, "text", "")
+                if rid is not None and txt:
+                    data.append((rid, tokenize(txt)))
+        if data:
+            conn.executemany(
+                f"INSERT OR REPLACE INTO {FTS_TABLE}(rowid, seg_text) VALUES (?, ?)",
+                data)
 
 
 def search_ids(keyword: str, db_path: Path | None = None) -> list[int]:
