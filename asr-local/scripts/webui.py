@@ -1981,14 +1981,18 @@ elif page == "数据库":
             names = [p["person_name"] for p in persons_now]
             mode = st.radio("操作", ["编辑已有", "新建人物"], horizontal=True, key="person_mode")
             if mode == "编辑已有" and names:
-                c_sel, c_btn = st.columns([3, 1], vertical_alignment="center")
+                c_sel, c_btn = st.columns([3, 1])
                 with c_sel:
                     pname = st.selectbox("姓名", names, key="edit_pname")
                 with c_btn:
+                    # v2.90：左侧「姓名」标签占一行，右侧用等高占位把按钮压到与输入框同行；
+                    # type=primary 取主题暖赭（primaryColor #b86a48），醒目防漏点。
+                    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
                     # v2.89（用户方案）：显式「确定加载」——点击后把当前人物资料直接写入
                     # 各控件状态，覆盖 Streamlit 跨 rerun 保留的旧值（自动回填/清状态
                     # 实测仍被旧会话状态盖掉）；控件在本 run 稍后创建，写入立即生效。
-                    if st.button("确定加载", key="btn_load_person", use_container_width=True):
+                    if st.button("确定加载", key="btn_load_person",
+                                 type="primary", use_container_width=True):
                         _cur = next((p for p in persons_now if p["person_name"] == pname), {})
                         st.session_state["edit_new_name"] = _cur.get("person_name") or ""
                         st.session_state["p_gender"] = _cur.get("gender") or ""

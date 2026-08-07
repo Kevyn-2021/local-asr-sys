@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.89  
+**版本**: v2.90  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -764,6 +764,7 @@ MEMORY_CONFIG = {
 | v2.87 | 2026-08-07 | **未标注试听恢复 + 人物档案改名 + 字幕自动滚动修复（webui.py / db.py §1.6 / §1.7 / §4.7 / PRD FR-010、§8.2 页3/页4）**: ① `render_segment_audio()` 恢复为 seek 轻量版（`sf.SoundFile` 句柄 `seek(s)` + `read(e-s)` 只读片段帧），「声纹簇·标注学习」仅未标注簇展示「🎧 试听发言」；② 新增 `db.rename_person()`——同步 persons / speaker_clusters.assigned_name / voiceprints.person_name / transcripts.speaker（重名/不存在抛 ValueError），人物档案「编辑已有」可改姓名，UI 再调 `update_txt_files_speaker()` 更新文本备份；**不置 reset_on_next_match、不动 embedding**（改名≠改标）；③ 归档字幕自动滚动修复——`st.markdown` 内嵌 `<script>` 经 React innerHTML 注入不执行（v2.86 方案实测无效），改 `st.components.v1.html` 组件 iframe 承载字幕容器 + JS（`window.parent.document.querySelector('audio')` 监听 timeupdate，同源 srcdoc iframe 可访问父文档）；④ 部署验证：webui.py/db.py 两端 md5 一致，AppTest 页 3/页 4 渲染 0 异常，改名行为测试通过（四表同步 + reset 保留），HTTP 200；UI_VERSION 更新（v2.87 部署） |
 | v2.88 | 2026-08-07 | **试听立体声兼容 + 人物档案表单串信息修复（webui.py §1.6 / §1.7 / PRD FR-010、§8.2 页3）**: ① `render_segment_audio()`——实测 unknown_0044 片段来自 **48kHz 立体声**文件，`SoundFile.read()` 返回 `(n,2)` 二维数组，`st.audio` 不接受 2D 数组 → except 分支「无法加载音频片段」（v2.87 只对 `(n,1)` 单声道做了 squeeze；该 bug 自 v2.69 起对立体声录音一直存在）；修复：`y.ndim==2` 一律 `y.mean(axis=1)` 混音为单声道 + 空段保护；② 人物档案「编辑已有」——Streamlit 带 key 控件（`p_gender/p_birth/p_relation/p_note/edit_new_name`）状态跨 rerun 保留，切换 `edit_pname` 后 `value=` 参数被旧会话状态覆盖，表单永远显示第一个选中人资料；修复：`edit_last_person` 记录上次选中，人物变化先 `session_state.pop(key)` 清空再回填；③ 部署验证：webui.py 两端 md5 一致，AppTest 选中 unknown_0044 后 warning 数 0（修复前 1 条「无法加载音频片段」）、表单切换人物字段正确回填，HTTP 200；UI_VERSION 更新（v2.88 部署） |
 | v2.89 | 2026-08-07 | **人物档案表单「确定加载」交互（webui.py §1.6 / PRD FR-010）**: ① 原因——Streamlit 带 key 控件状态跨 rerun 保留，v2.88 的「人物变化先 pop key 再回填」实测仍显示上一个选中人资料（`value=` 参数在状态已存在时不生效）；② 方案（用户提出）——「编辑已有」姓名下拉右侧加「确定加载」按钮，点击后把 `edit_new_name/p_gender/p_birth/p_relation/p_note` 五个控件状态直接写为当前人物资料（在控件创建前写入，本 run 即生效），后续编辑/保存不变；③ 部署验证：webui.py 两端 md5 一致，AppTest 数据库页 0 异常，HTTP 200；UI_VERSION 更新（v2.89 部署） |
+| v2.90 | 2026-08-07 | **人物档案「确定加载」样式与对齐（webui.py §1.6 / PRD §8.2 页3）**: ① `st.button(type="primary")`——主题 `primaryColor=#b86a48`（暖赭），按钮醒目；② 对齐——selectbox 的「姓名」标签占一行高度，按钮列顶部加 `height:24px` 占位 div，使按钮与左侧输入框同行；③ 部署验证：webui.py 两端 md5 一致，AppTest 数据库页 0 异常，HTTP 200；UI_VERSION 更新（v2.90 部署） |
 
 ---
 
