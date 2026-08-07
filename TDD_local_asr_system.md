@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.87  
+**版本**: v2.88  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -762,6 +762,7 @@ MEMORY_CONFIG = {
 | v2.85 | 2026-08-07 | **WebUI 轻量化——移除片段试听（webui.py §1.7 / §4.7 / PRD §8.2 页3/页4）**: ① 删除 `render_segment_audio()` 及其两处调用（数据库页「试听发言」+ 文件归档搜索片段回放）——soundfile 整文件读入再切片，大音频加载重/易失败（「无法加载音频片段」根因）；② 「声纹簇·标注学习」发言列表仅对未标注簇渲染（`unlabeled = clusters 非空且无 assigned_name 且非 skip_label`），已标注/不标注显示提示、不再加载音频；③ 文件归档「浏览归档文件」归档音频新增整段回放（`st.audio` 直接喂路径，浏览器拖动进度，不做段偏移）+ 滚动字幕（`audio_path`/`archive_name` 匹配 transcripts，说话人经显示层映射）；④ 部署验证：webui.py 两端 md5 一致，AppTest 页 3/页 4 渲染 0 异常，HTTP 200；UI_VERSION 更新（v2.85 部署） |
 | v2.86 | 2026-08-07 | **文件归档体验增强（webui.py §4.7 / PRD §8.2 页4）**: ① 浏览归档文件月份 `<details>` 展开内容包一层限高 div（`max-height:300px; overflow-y:auto`）——文本备份/归档音频按月折叠后不再撑开页面；② 归档音频字幕**随播放自动滚动 + 当前句高亮**——转录行带 `data-start/data-end`（`segment_start_offset/end_offset`），客户端 JS 监听 `<audio>.timeupdate` 命中当前行 `scrollIntoView({block:'center',behavior:'smooth'})` + `.active` 高亮，纯前端、零服务端开销（SQL 仅补两列偏移字段）；③ 部署验证：webui.py 两端 md5 一致，AppTest 页 4 渲染 0 异常，HTTP 200；UI_VERSION 更新（v2.86 部署） |
 | v2.87 | 2026-08-07 | **未标注试听恢复 + 人物档案改名 + 字幕自动滚动修复（webui.py / db.py §1.6 / §1.7 / §4.7 / PRD FR-010、§8.2 页3/页4）**: ① `render_segment_audio()` 恢复为 seek 轻量版（`sf.SoundFile` 句柄 `seek(s)` + `read(e-s)` 只读片段帧），「声纹簇·标注学习」仅未标注簇展示「🎧 试听发言」；② 新增 `db.rename_person()`——同步 persons / speaker_clusters.assigned_name / voiceprints.person_name / transcripts.speaker（重名/不存在抛 ValueError），人物档案「编辑已有」可改姓名，UI 再调 `update_txt_files_speaker()` 更新文本备份；**不置 reset_on_next_match、不动 embedding**（改名≠改标）；③ 归档字幕自动滚动修复——`st.markdown` 内嵌 `<script>` 经 React innerHTML 注入不执行（v2.86 方案实测无效），改 `st.components.v1.html` 组件 iframe 承载字幕容器 + JS（`window.parent.document.querySelector('audio')` 监听 timeupdate，同源 srcdoc iframe 可访问父文档）；④ 部署验证：webui.py/db.py 两端 md5 一致，AppTest 页 3/页 4 渲染 0 异常，改名行为测试通过（四表同步 + reset 保留），HTTP 200；UI_VERSION 更新（v2.87 部署） |
+| v2.88 | 2026-08-07 | **试听立体声兼容 + 人物档案表单串信息修复（webui.py §1.6 / §1.7 / PRD FR-010、§8.2 页3）**: ① `render_segment_audio()`——实测 unknown_0044 片段来自 **48kHz 立体声**文件，`SoundFile.read()` 返回 `(n,2)` 二维数组，`st.audio` 不接受 2D 数组 → except 分支「无法加载音频片段」（v2.87 只对 `(n,1)` 单声道做了 squeeze；该 bug 自 v2.69 起对立体声录音一直存在）；修复：`y.ndim==2` 一律 `y.mean(axis=1)` 混音为单声道 + 空段保护；② 人物档案「编辑已有」——Streamlit 带 key 控件（`p_gender/p_birth/p_relation/p_note/edit_new_name`）状态跨 rerun 保留，切换 `edit_pname` 后 `value=` 参数被旧会话状态覆盖，表单永远显示第一个选中人资料；修复：`edit_last_person` 记录上次选中，人物变化先 `session_state.pop(key)` 清空再回填；③ 部署验证：webui.py 两端 md5 一致，AppTest 选中 unknown_0044 后 warning 数 0（修复前 1 条「无法加载音频片段」）、表单切换人物字段正确回填，HTTP 200；UI_VERSION 更新（v2.88 部署） |
 
 ---
 

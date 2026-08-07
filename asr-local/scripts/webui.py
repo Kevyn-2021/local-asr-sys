@@ -1229,9 +1229,9 @@ def panel(title: str, desc: str = ""):
 
 
 def render_segment_audio(row: dict):
-    """试听某条发言的音频片段（v2.87 轻量版）：soundfile 句柄 seek 到段起点，
-    只读取该段帧数，不再整文件读入（v2.85 曾因整文件读入重/易失败而移除，
-    现恢复为「声纹簇·标注学习」未标注簇专用）。"""
+    """试听某条发言的音频片段（v2.88）：soundfile 句柄 seek 到段起点只读该段帧数，
+    不再整文件读入；v2.88 修复 48kHz 立体声——`read()` 返回 (n,2) 二维数组，
+    `st.audio` 不支持 2D 数组会抛异常（v2.87 只处理了单声道 (n,1)），一律均值混音为单声道。"""
     p = row.get("audio_path")
     if p and Path(p).exists():
         try:
@@ -1243,9 +1243,12 @@ def render_segment_audio(row: dict):
                 e = max(s, min(int(row["segment_end_offset"] * sr), total))
                 f.seek(s)
                 y = f.read(e - s)
-            if y.ndim == 2 and y.shape[1] == 1:
-                y = y[:, 0]
-            st.audio(y, sample_rate=sr, format="audio/wav")
+            if y.ndim == 2:
+                y = y.mean(axis=1)  # 立体声/多声道混音为单声道（st.audio 不接受 2D 数组）
+            if len(y) > 0:
+                st.audio(y, sample_rate=sr, format="audio/wav")
+            else:
+                st.info("该片段时长为 0，无音频可播放")
         except Exception:
             st.warning("无法加载音频片段")
     else:
@@ -1980,6 +1983,12 @@ elif page == "数据库":
             if mode == "编辑已有" and names:
                 pname = st.selectbox("姓名", names, key="edit_pname")
                 cur = next((p for p in persons_now if p["person_name"] == pname), {})
+                # v2.88：Streamlit 带 key 控件状态跨 rerun 保留，切换人物后 value 参数
+                # 会被旧会话状态覆盖（曾串成上一个选中人的资料）；人物变化时先清空状态再回填。
+                if st.session_state.get("edit_last_person") != pname:
+                    for _k in ("p_gender", "p_birth", "p_relation", "p_note", "edit_new_name"):
+                        st.session_state.pop(_k, None)
+                    st.session_state["edit_last_person"] = pname
                 target_name = st.text_input(
                     "姓名（可改名，唯一且不含空格；仅改姓名，不会重置已学习声纹）",
                     value=cur.get("person_name") or "", key="edit_new_name")
