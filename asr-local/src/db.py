@@ -435,6 +435,32 @@ def get_person(person_name: str, db_path: Path | None = None) -> dict | None:
         return dict(row) if row else None
 
 
+def rename_person(old_name: str, new_name: str, db_path: Path | None = None) -> tuple[int, int, int, int]:
+    """重命名人物（v2.87，仅改姓名，不触碰声纹学习——不置 reset_on_next_match、不动 embedding）。
+    同步 persons / speaker_clusters.assigned_name / voiceprints.person_name / transcripts.speaker 原文标签。
+    返回 (persons, clusters, voiceprints, transcripts) 更新行数；重名或不存在抛 ValueError。"""
+    if not old_name or not new_name or " " in new_name:
+        raise ValueError("姓名不能为空或含空格")
+    with connect(db_path) as conn:
+        if conn.execute("SELECT 1 FROM persons WHERE person_name=? AND person_name<>?",
+                        (new_name, old_name)).fetchone():
+            raise ValueError(f"姓名「{new_name}」已存在")
+        n_p = conn.execute("UPDATE persons SET person_name=? WHERE person_name=?",
+                           (new_name, old_name)).rowcount
+        if n_p == 0:
+            raise ValueError(f"人物「{old_name}」不存在")
+        n_c = conn.execute("UPDATE speaker_clusters SET assigned_name=? WHERE assigned_name=?",
+                           (new_name, old_name)).rowcount
+        try:
+            n_v = conn.execute("UPDATE voiceprints SET person_name=? WHERE person_name=?",
+                               (new_name, old_name)).rowcount
+        except sqlite3.IntegrityError:
+            raise ValueError(f"姓名「{new_name}」已存在（声纹库冲突）") from None
+        n_t = conn.execute("UPDATE transcripts SET speaker=? WHERE speaker=?",
+                           (new_name, old_name)).rowcount
+        return n_p, n_c, n_v, n_t
+
+
 # ====== Transcript 批量插入 ======
 
 @dataclass  # noqa: F821

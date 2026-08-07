@@ -31,6 +31,7 @@ sys.path.insert(0, str(PROJ_ROOT))
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from config.settings import (
     ARCHIVE_AUDIO_DIR,
@@ -53,6 +54,7 @@ from src.db import (
     list_clusters_view,
     list_persons,
     list_voiceprints,
+    rename_person,
     set_cluster_skip,
     unassign_cluster_name,
     update_transcripts_speaker,
@@ -1226,6 +1228,30 @@ def panel(title: str, desc: str = ""):
     return c
 
 
+def render_segment_audio(row: dict):
+    """试听某条发言的音频片段（v2.87 轻量版）：soundfile 句柄 seek 到段起点，
+    只读取该段帧数，不再整文件读入（v2.85 曾因整文件读入重/易失败而移除，
+    现恢复为「声纹簇·标注学习」未标注簇专用）。"""
+    p = row.get("audio_path")
+    if p and Path(p).exists():
+        try:
+            import soundfile as sf
+            with sf.SoundFile(str(p)) as f:
+                sr = f.samplerate
+                total = len(f)
+                s = max(0, min(int(row["segment_start_offset"] * sr), total))
+                e = max(s, min(int(row["segment_end_offset"] * sr), total))
+                f.seek(s)
+                y = f.read(e - s)
+            if y.ndim == 2 and y.shape[1] == 1:
+                y = y[:, 0]
+            st.audio(y, sample_rate=sr, format="audio/wav")
+        except Exception:
+            st.warning("无法加载音频片段")
+    else:
+        st.info("该片段无对应音频文件")
+
+
 def render_full_audio(a: dict):
     """整段音频回放（v2.67 详情页）：不按片段切分，用户按文本时间戳自行拖动"""
     p = a.get("audio_path")
@@ -1816,6 +1842,17 @@ elif page == "数据库":
                         + "".join(lines) + "</div>",
                         unsafe_allow_html=True,
                     )
+                    # ── 试听发言（v2.87 恢复，仅未标注簇）：听声音确认说话人 ──
+                    utt_opts = {r["id"]: f"[{fmt_full_time(r['absolute_start_time'])}] {clean_text(r['text'], 24)}"
+                                for r in utts}
+                    sel_utt = st.selectbox(
+                        "🎧 试听发言（听声音确认说话人；按时间与文字预览选即可）",
+                        list(utt_opts),
+                        format_func=lambda k: utt_opts[k],
+                        key="utt_listen",
+                    )
+                    row_utt = next(r for r in utts if r["id"] == sel_utt)
+                    render_segment_audio(row_utt)
             elif cls0:
                 if cls0.get("assigned_name"):
                     st.info(
@@ -1943,8 +1980,12 @@ elif page == "数据库":
             if mode == "编辑已有" and names:
                 pname = st.selectbox("姓名", names, key="edit_pname")
                 cur = next((p for p in persons_now if p["person_name"] == pname), {})
+                target_name = st.text_input(
+                    "姓名（可改名，唯一且不含空格；仅改姓名，不会重置已学习声纹）",
+                    value=cur.get("person_name") or "", key="edit_new_name")
             else:
                 pname = st.text_input("姓名（唯一，不含空格）", key="new_pname2")
+                target_name = pname
                 cur = {}
             c1, c2 = st.columns(2)
             with c1:
@@ -1958,16 +1999,34 @@ elif page == "数据库":
                                          key="p_relation")
             note = st.text_area("备注", value=cur.get("note") or "", key="p_note")
             if st.button("保存资料", key="btn_save_person"):
-                if not pname.strip():
+                new_n = target_name.strip()
+                if not new_n:
                     st.warning("请填写姓名")
-                elif " " in pname.strip():
+                elif " " in new_n:
                     st.warning("姓名不能含空格")
+                elif mode == "编辑已有" and new_n != pname:
+                    # v2.87：仅改名，不触碰声纹学习（不置 reset、不动 embedding）
+                    try:
+                        n_p, n_c, n_v, n_t = rename_person(pname, new_n)
+                        n_f = update_txt_files_speaker(pname, new_n)
+                    except ValueError as e:
+                        st.warning(str(e))
+                    else:
+                        by = birth_year.strip()
+                        by_val = int(by) if by.isdigit() else None
+                        upsert_person(new_n, gender or None, by_val,
+                                      relation.strip() or None, note.strip() or None)
+                        st.success(
+                            f"已把「{pname}」改名为「{new_n}」并保存资料"
+                            f"（更新 {n_p} 条档案、{n_c} 个声纹簇、{n_v} 条声纹库、"
+                            f"{n_t} 条转录、{n_f} 个文本备份；未重置已学习声纹）。")
+                        st.rerun()
                 else:
                     by = birth_year.strip()
                     by_val = int(by) if by.isdigit() else None
-                    upsert_person(pname.strip(), gender or None, by_val,
+                    upsert_person(new_n, gender or None, by_val,
                                   relation.strip() or None, note.strip() or None)
-                    st.success(f"已保存 {pname.strip()} 的资料")
+                    st.success(f"已保存 {new_n} 的资料")
                     st.rerun()
 
     c = panel("数据库怎么组织的", "四张业务表 + 全文索引")
@@ -2167,21 +2226,30 @@ elif page == "文件归档":
                                 f" - {fmt_full_time(s['absolute_end_time'])}</span> "
                                 f"<strong>{html.escape(who)}</strong>：{clean_text(s['text'])}</div>"
                             )
-                        st.markdown(
-                            "<style>.seg-line.active{background:rgba(184,106,72,0.16);}</style>"
-                            "<div id='arch-sub' style='margin-top:8px;padding:12px 16px;"
-                            "background:var(--bg-subtle);border-radius:6px;font-size:0.95rem;"
-                            "line-height:1.9;max-height:420px;overflow-y:auto;'>"
-                            + "".join(lines) + "</div>"
+                        # v2.87：st.markdown 内嵌 <script> 经 React innerHTML 注入不会执行，
+                        # 改用 st.components.v1.html 组件 iframe 承载字幕 + JS（同源 srcdoc
+                        # 可访问父文档的 <audio>，监听 timeupdate 高亮并滚动当前句）。
+                        comp_html = (
+                            "<style>"
+                            "body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}"
+                            ".sub-box{max-height:420px;overflow-y:auto;padding:12px 16px;"
+                            "background:#f7f5ef;border-radius:6px;font-size:0.95rem;line-height:1.9;}"
+                            ".seg-line{padding:3px 8px;border-radius:4px;}"
+                            ".seg-line.active{background:rgba(184,106,72,0.20);}"
+                            "</style>"
+                            "<div class='sub-box' id='arch-sub'>" + "".join(lines) + "</div>"
                             "<script>"
                             "(function(){"
+                            "var tries=0;"
+                            "var timer=setInterval(function(){"
+                            "tries++;"
+                            "try{"
+                            "var parentDoc=window.parent.document;"
+                            "var audio=parentDoc.querySelector('audio');"
                             "var box=document.getElementById('arch-sub');"
-                            "if(!box)return;"
+                            "if(box&&audio){"
+                            "clearInterval(timer);"
                             "var segs=Array.prototype.slice.call(box.querySelectorAll('.seg-line'));"
-                            "if(!segs.length)return;"
-                            "var root=box.closest('[data-testid=\"stVerticalBlock\"]')||document.body;"
-                            "var audio=root.querySelector('audio')||document.querySelector('audio');"
-                            "if(!audio)return;"
                             "audio.addEventListener('timeupdate',function(){"
                             "var t=audio.currentTime,cur=null;"
                             "for(var i=0;i<segs.length;i++){"
@@ -2195,10 +2263,14 @@ elif page == "文件归档":
                             "cur.scrollIntoView({block:'center',behavior:'smooth'});}"
                             "}"
                             "});"
+                            "}"
+                            "}catch(err){}"
+                            "if(tries>100)clearInterval(timer);"
+                            "},200);"
                             "})();"
-                            "</script>",
-                            unsafe_allow_html=True,
+                            "</script>"
                         )
+                        components.html(comp_html, height=460, scrolling=True)
                     else:
                         st.caption("该音频暂无对应转录片段（或尚未入库）")
 

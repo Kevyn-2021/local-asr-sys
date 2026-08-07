@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.86  
+**版本**: v2.87  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -157,6 +157,7 @@ FROM persons p ORDER BY p.created_at
 WebUI 人物档案面板将 `has_voiceprint` 映射为"是/否"显示，用户可一眼看出哪些人已标注声纹、哪些尚未标注。
 
 **标注回填不覆盖已有档案（v2.19）**：声纹簇面板「标注并回填」时，若 `persons` 表中已存在该姓名（用户填过资料），**不能**再调用只传姓名的 `upsert_person()`——其 `ON CONFLICT DO UPDATE` 会把未传字段覆盖为 NULL，导致"标注后档案只剩姓名"。必须先 `get_person()` 判断：仅当档案不存在时才自动建档。
+- **改名支持（v2.87）**：编辑已有人物可改姓名——`db.rename_person()` 同步 `persons` / `speaker_clusters.assigned_name` / `voiceprints.person_name` / `transcripts.speaker` 原文标签（重名/不存在抛 `ValueError`，UI 提示不保存），再调 `archive.update_txt_files_speaker()` 更新文本备份；**不置 `reset_on_next_match`、不动簇向量**（改名 ≠ 改标：改名不重新认定身份，学习行为完全不受影响）
 
 ### 1.7 声纹簇标注校准（v2.20）
 
@@ -189,7 +190,7 @@ def apply_cluster_label(cluster_id, target):
 - **发言列表**：`get_speaker_utterances(raws, limit=100)` 按 `speaker IN (label[, assigned_name])` 查询，绝对时间倒序
 - **声纹匹配 · 学习看板（v2.79 起 / v2.80 按人展示）**：数据库页底部只读面板——顶部阈值行（认名 ≥0.65 ｜ 疑似 0.50–0.65 ｜ 学习 ≥0.75，读 `VOICEPRINT_CONFIG`）；主表**按已标注人员**逐行展示其片段 `speaker_match_score` 分档（≥0.75 高置信 / 0.65–0.75 认名未学习 / 0.50–0.65 疑似 / <0.50 未识别 / 无得分 / 合计 / 待重置簇），每行聚合"姓名 + 该人全部簇 label"（`get_voiceprint_dashboard()` 一次性加载全部 (speaker, score) 后 Python 分档），末行（全部）合计；底部小字概况（已标注人数/未标注/不标注/无发言样本簇/待重置簇，`list_clusters_view` 含 `reset_on_next_match`）；标注流程不展示置信度
 - **发言列表仅未标注簇渲染（v2.85）**：`unlabeled = clusters 非空且无 assigned_name 且非 skip_label` 才调 `get_speaker_utterances()`；已标注/不标注显示提示「请到文件归档回听整段」、不再加载任何音频片段
-- **「🎧 试听发言」已移除（v2.69 加 → v2.85 删）**：原按 `segment_start_offset/end_offset` 从 `audio_path` 切段播放（`render_segment_audio()` 用 soundfile **整文件读入再切片**——大音频加载重/易失败，是「无法加载音频片段」根因）；v2.85 起删除该函数及全部调用（数据库页试听 + 文件归档搜索片段回放），听音频统一到「文件归档」整段回放（`st.audio` 直接喂路径，不做段偏移）
+- **「🎧 试听发言」（v2.69 加 → v2.85 删 → v2.87 恢复为未标注簇专用）**：仅未标注簇展示；`render_segment_audio()` 用 `sf.SoundFile(path)` 句柄 **seek 到段起点只读该段帧**（`f.seek(s); f.read(e-s)`），不再整文件读入（v2.85 删除根因：整文件读入大音频加载重/易失败）；已标注/不标注仍不加载音频，听整段去「文件归档」
 - **标注操作区**（按簇渲染）：未标注 →「标注并回填」+「🚫 设为不标注」；已标注 →「改标并回填」+「改回未知（沿用编号 {label}）」；不标注中 →「↩️ 恢复标注」；改回未知为**两步确认**（`st.session_state[f"unassign_{cluster_id}"]`），操作统一走 `apply_cluster_label()` 与 `set_cluster_skip()`
 - **改标即重置（v2.76 / v2.82 补清除）**：`apply_cluster_label` 的标注/改标分支统一走 `assign_cluster_name()`——"改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置 `reset_on_next_match=1`，下次处理命中时重置向量（实现见 §3.3）；`unassign_cluster_name`（改回未知）**同时清 `reset_on_next_match=0`**——休眠标记不再让看板「待重置簇」误计未标注簇，再标注时按规则重新置位
 - **不标注语义（v2.43 / v2.75 修正）**：`skip_label=1` 是独立于标注的标记——不写 `assigned_name`、不改 `label`/`embedding`，**不触发任何 transcripts 回填**（编号未变）；匹配层（`voiceprint.py`）照常参与匹配（`load_all_clusters` 仍返回全部簇、沿用编号）但 **v2.75 起不参与向量学习**（与纯 unknown 一致）；不标注簇在说话人下拉显示「🚫 不标注」且标注入口隐藏，恢复标注即 `set_cluster_skip(cid, False)`、入口重新出现（标注→改回→再标注仍全程可逆）
@@ -760,6 +761,7 @@ MEMORY_CONFIG = {
 | v2.84 | 2026-08-07 | **批处理可恢复性 + 一键重新入队（webui.py / process_inbox.py / systemd §3.6 / §4.8 / PRD FR-008-M）**: ① `asr-webui.service` 加 `KillMode=process`——重启服务只杀 webui 主进程，webui 启动的 `process_inbox.py` 不再被 SIGTERM 连坐（2026-08-07 16:05 实战：v2.83 部署重启把运行中批处理杀成 Diarization 失败、文件移入 error/）；② 锁文件 PID 感知——webui `inbox_processing()` 与 `process_inbox._acquire_lock()` 均按「PID 存活且 cmdline 含 process_inbox.py」判定有效锁，否则视为陈旧立即接管（崩溃/SIGKILL 后无需等 6 小时）；③ 新增 `requeue_failed_files()` + 收件箱面板「↩️ 失败文件重新入队并处理」按钮——error/ 当前批次失败音频移回收件箱并启动（.error.txt 留待归档）；④ 行为验证：死 PID 锁立即接管、活 PID 锁拒绝双开、重新入队按钮移动文件并触发处理；⑤ 部署验证：webui.py/process_inbox.py/unit 两端一致，daemon-reload + 服务重启 active + HTTP 200；UI_VERSION 更新（v2.84 部署） |
 | v2.85 | 2026-08-07 | **WebUI 轻量化——移除片段试听（webui.py §1.7 / §4.7 / PRD §8.2 页3/页4）**: ① 删除 `render_segment_audio()` 及其两处调用（数据库页「试听发言」+ 文件归档搜索片段回放）——soundfile 整文件读入再切片，大音频加载重/易失败（「无法加载音频片段」根因）；② 「声纹簇·标注学习」发言列表仅对未标注簇渲染（`unlabeled = clusters 非空且无 assigned_name 且非 skip_label`），已标注/不标注显示提示、不再加载音频；③ 文件归档「浏览归档文件」归档音频新增整段回放（`st.audio` 直接喂路径，浏览器拖动进度，不做段偏移）+ 滚动字幕（`audio_path`/`archive_name` 匹配 transcripts，说话人经显示层映射）；④ 部署验证：webui.py 两端 md5 一致，AppTest 页 3/页 4 渲染 0 异常，HTTP 200；UI_VERSION 更新（v2.85 部署） |
 | v2.86 | 2026-08-07 | **文件归档体验增强（webui.py §4.7 / PRD §8.2 页4）**: ① 浏览归档文件月份 `<details>` 展开内容包一层限高 div（`max-height:300px; overflow-y:auto`）——文本备份/归档音频按月折叠后不再撑开页面；② 归档音频字幕**随播放自动滚动 + 当前句高亮**——转录行带 `data-start/data-end`（`segment_start_offset/end_offset`），客户端 JS 监听 `<audio>.timeupdate` 命中当前行 `scrollIntoView({block:'center',behavior:'smooth'})` + `.active` 高亮，纯前端、零服务端开销（SQL 仅补两列偏移字段）；③ 部署验证：webui.py 两端 md5 一致，AppTest 页 4 渲染 0 异常，HTTP 200；UI_VERSION 更新（v2.86 部署） |
+| v2.87 | 2026-08-07 | **未标注试听恢复 + 人物档案改名 + 字幕自动滚动修复（webui.py / db.py §1.6 / §1.7 / §4.7 / PRD FR-010、§8.2 页3/页4）**: ① `render_segment_audio()` 恢复为 seek 轻量版（`sf.SoundFile` 句柄 `seek(s)` + `read(e-s)` 只读片段帧），「声纹簇·标注学习」仅未标注簇展示「🎧 试听发言」；② 新增 `db.rename_person()`——同步 persons / speaker_clusters.assigned_name / voiceprints.person_name / transcripts.speaker（重名/不存在抛 ValueError），人物档案「编辑已有」可改姓名，UI 再调 `update_txt_files_speaker()` 更新文本备份；**不置 reset_on_next_match、不动 embedding**（改名≠改标）；③ 归档字幕自动滚动修复——`st.markdown` 内嵌 `<script>` 经 React innerHTML 注入不执行（v2.86 方案实测无效），改 `st.components.v1.html` 组件 iframe 承载字幕容器 + JS（`window.parent.document.querySelector('audio')` 监听 timeupdate，同源 srcdoc iframe 可访问父文档）；④ 部署验证：webui.py/db.py 两端 md5 一致，AppTest 页 3/页 4 渲染 0 异常，改名行为测试通过（四表同步 + reset 保留），HTTP 200；UI_VERSION 更新（v2.87 部署） |
 
 ---
 
