@@ -84,6 +84,10 @@ VOICEPRINT_CONFIG = {
     # 调低后提高自动关联成功率；误关联可由 Web「校准已标注」手工改回
     "threshold_auto":    0.65,   # >= 自动标注
     "threshold_review":  0.50,   # >= 0.50 且 < 0.65 → "疑似待确认"；< 0.50 → UNKNOWN
+    # v2.79：学习阈值与认名阈值解耦——命中已标注簇且得分 >= learn_threshold 才把样本
+    # 平均进簇向量；[threshold_auto, learn_threshold) 之间只自动认名、不学习，
+    # 防止低置信/低质量音源（低码率致分离/嵌入不准）污染簇向量
+    "learn_threshold":   0.75,
     # 录入规范
     "enroll_min_duration_s":  60,
     "enroll_max_duration_s":  180,

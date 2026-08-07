@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.78  
+**版本**: v2.79  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -187,6 +187,7 @@ def apply_cluster_label(cluster_id, target):
 布局按「筛选说话人 → 查看发言 → 试听确认 → 直接标注」组织（见 [PRD §8.2 页 3](./PRD_local_asr_system.md#82-系统看板布局ui-v20)），此处仅记录实现要点：
 - **说话人下拉（v2.78 优化）**：已标注人员按 `assigned_name` **合并为一行**（同名多簇：`raws = [姓名] + 全部 label`，发言聚合展示）；未标注/不标注的 unknown 各自一行；**无发言样本的簇默认隐藏**（`sp_utt` 按 transcripts.speaker 计数判断，勾选「显示无发言样本的说话人」可显示，供清理/改名）；排序 = 未标注（按编号）→ 已标注（按姓名）→ 不标注（按编号）→ 声纹库命名；标注操作区对合并姓名展示簇清单，改标/改回**批量作用于全部同名簇**并汇总回填数（与 `apply_cluster_label` 按姓名全局回填一致）
 - **发言列表**：`get_speaker_utterances(raws, limit=100)` 按 `speaker IN (label[, assigned_name])` 查询，绝对时间倒序
+- **声纹匹配 · 学习看板（v2.79）**：数据库页底部只读面板——片段 `speaker_match_score` 得分档位分布（≥0.75 高置信 / 0.65–0.75 认名未学习 / 0.50–0.65 疑似 / <0.50 未识别 / 无得分）、声纹簇概况（`list_clusters_view` 现含 `reset_on_next_match`，供待重置计数）与已标注人员明细（簇数/样本数/发言数/待重置簇）；标注流程不展示置信度
 - **「🎧 试听发言」**（v2.69）：下拉按「时间 + 文字预览」选一条，`render_segment_audio()` 按 `segment_start_offset/end_offset` 从 `audio_path` 切段播放（内部以 `transcripts.id` 为键，不展示）
 - **标注操作区**（按簇渲染）：未标注 →「标注并回填」+「🚫 设为不标注」；已标注 →「改标并回填」+「改回未知（沿用编号 {label}）」；不标注中 →「↩️ 恢复标注」；改回未知为**两步确认**（`st.session_state[f"unassign_{cluster_id}"]`），操作统一走 `apply_cluster_label()` 与 `set_cluster_skip()`
 - **改标即重置（v2.76）**：`apply_cluster_label` 的标注/改标分支统一走 `assign_cluster_name()`——"改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置 `reset_on_next_match=1`，下次处理命中时重置向量（实现见 §3.3）
@@ -376,6 +377,7 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
 声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_local_asr_system.md#fr-003-cluster-声纹簇持久化与标注学习)。
 
 #### 标注学习与向量更新（v2.75/v2.76 定稿，用户视角场景表见 [PRD FR-003-CLUSTER](./PRD_local_asr_system.md#fr-003-cluster-声纹簇持久化与标注学习)）
+- **认名/学习阈值解耦（v2.79）**：命中已标注簇时，`score >= learn_threshold`（默认 0.75，`VOICEPRINT_CONFIG.learn_threshold`，可改）才增量学习；`[threshold_auto, learn_threshold)`（0.65–0.75）只返回姓名、不学习；改标重置（`reset_on_next_match`）**不受学习阈值限制**——用户已人工确认身份，`>= threshold_auto` 即重新播种。
 - **只学已标注簇（v2.75）**：`match_speaker` 命中声纹簇且 `score >= 0.65` 时，**仅当簇已标注（`assigned_name` 非空）才调用 `_learn_into_cluster` 做增量平均**（`new_vec = (旧vec×n + 新vec)/(n+1)`，`sample_count+1`）；纯 unknown / 已取消标注 / skip_label（不标注）簇只返回编号、不更新向量。原因：低质量音源（16kHz 但 32kbps mp3 实测）分离/嵌入不准，3 个说话人会被并成一个簇，若照常学习会把多人向量平均进同一簇造成污染（v2.74 实测 unknown_0044 被 1.5h 低码率音频污染 1 次）。用户标注后该簇重新进入学习。
 - **改标即重置（v2.76）**：`speaker_clusters` 新增 `reset_on_next_match INTEGER DEFAULT 0`（SCHEMA_SQL + `init_db()` 老库 ALTER 迁移），`load_all_clusters()` 读取该字段。`assign_cluster_name()` 在"原已标注且改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置位（同名重指派不重置）；`match_speaker` 命中带标记的已标注簇时调 `reset_cluster_vector()`——embedding **直接替换**、`sample_count=1`、清标记——否则走 v2.75 增量学习。纯新建簇（`sample_count=1`）首次标注不重置，保留该文件作为身份依据。原因：改标前旧姓名期间累积的样本无法逐条撤销，不重置就只能靠稀释，混合向量会持续带偏匹配、越用越不准。
 - **无发言样本的声纹簇（v2.75 记录）**：簇在声纹匹配阶段创建（`register_new_cluster` 立即持久化），早于 ASR 转录入库；转录未产出行（ASR 无文本 / 文件失败 / 批次中断）时该簇无关联 transcript → WebUI「声纹簇·标注学习」中显示 0 条发言、无音频可试听（如 unknown_0046）。身份追踪与转录成功解耦属预期，不影响匹配；若干扰可后续增加"清理无样本簇"运维功能。
@@ -746,6 +748,7 @@ MEMORY_CONFIG = {
 | v2.76 | 2026-08-07 | **改标即重置声纹向量（db.py / voiceprint.py §3.3 / PRD FR-003-CLUSTER）**: ① `speaker_clusters` 新增 `reset_on_next_match INTEGER DEFAULT 0` 列（含老库 ALTER 迁移），`load_all_clusters` 同步读取；② `assign_cluster_name` 在"原已标注且改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置 `reset_on_next_match=1`（同名重指派不重置；纯新建簇 `sample_count=1` 首次标注不重置）；③ `match_speaker` 命中待重置的已标注簇时调用 `reset_cluster_vector`（embedding 替换、`sample_count=1`、清标记），否则按 v2.75 增量学习；④ 部署验证：db.py / voiceprint.py 两端 md5 一致，行为测试通过（改标→命中→重置→再命中→正常学习） |
 | v2.77 | 2026-08-07 | **标注学习文档落位 + 冲突修正（TDD §1.7 / §3.3 / PRD FR-003-CLUSTER）**: ① §3.3 三条零散记录（v2.75 学习策略 / v2.76 改标重置 / 无样本簇）合并为「标注学习与向量更新」小节，补齐增量平均公式、重置规则与 v2.76 六步行为测试结果；② §1.7「不标注语义」修正——v2.43 原文"照常参与匹配学习"与 v2.75 冲突，改为"照常参与匹配（沿用编号）但不参与向量学习"，并补「改标即重置」实现要点；③ 五端协同：本版仅文档改动，代码保持 v2.76 已同步状态（db.py / voiceprint.py 两端 md5 一致，无需部署） |
 | v2.78 | 2026-08-07 | **声纹标注说话人下拉优化（webui.py §1.7 / PRD FR-003-CLUSTER、§8.2 页3）**: ① 选项构建重构——已标注按 `assigned_name` 合并为一行（`named_groups` + `raws=[姓名]+全部 label`），未标注/不标注 unknown 各自一行；新增「显示无发言样本的说话人」复选框（默认隐藏，`sp_utt` 统计 transcripts.speaker 计数判断）；排序：未标注 → 已标注（按姓名）→ 不标注 → 声纹库命名；② 标注操作区对合并姓名展示簇清单（对应 N 个声纹簇），改标/改回**批量作用于全部同名簇**并汇总回填数；单簇标注/不标注逻辑不变；③ 部署验证：webui.py 两端 md5 一致，服务重启 active + HTTP 200 + 日志无异常；实测下拉 46 → 20 行（KevinZH 18 簇合并为 1 行） |
+| v2.79 | 2026-08-07 | **认名/学习阈值解耦 + 声纹看板（settings.py / voiceprint.py / db.py / webui.py §3.3 / §1.7）**: ① `VOICEPRINT_CONFIG` 新增 `learn_threshold: 0.75`（可改）；`match_speaker` 命中已标注簇时 `>= learn_threshold` 才 `_learn_into_cluster`，`[threshold_auto, learn_threshold)` 只认名不学；改标重置（`reset_on_next_match`）≥ auto 即重新播种、不受学习阈值限制；② `list_clusters_view` 补 `reset_on_next_match`（看板待重置计数）；③ 新增 `get_voiceprint_dashboard()` + 数据库页底部「声纹匹配 · 学习看板」面板（片段得分分布 / 簇概况 / 人员明细）；④ 部署验证：四文件两端 md5 一致，服务重启 active + HTTP 200，行为测试（0.70 不学 / 0.80 学 / 重置 0.70 重播种）通过 |
 
 ---
 

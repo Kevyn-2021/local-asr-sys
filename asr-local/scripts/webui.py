@@ -41,6 +41,7 @@ from config.settings import (
     INBOX_ERROR_DIR,
     LOG_PATH,
     SUPPORTED_EXTENSIONS,
+    VOICEPRINT_CONFIG,
 )
 from src.archive import update_txt_files_speaker
 from src.db import (
@@ -704,6 +705,68 @@ def get_audio_segments(file_hash: str) -> list[dict]:
             "FROM transcripts WHERE file_hash=? ORDER BY absolute_start_time ASC",
             (file_hash,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_voiceprint_dashboard() -> dict:
+    """数据库页底部「声纹匹配 · 学习看板」数据（只读统计，v2.79）。
+    来源：transcripts.speaker_match_score 得分档位分布 + speaker_clusters 概况。"""
+    with connect() as conn:
+        bands = [dict(r) for r in conn.execute(
+            "SELECT CASE "
+            " WHEN speaker_match_score IS NULL THEN '无得分' "
+            " WHEN speaker_match_score >= 0.75 THEN '高置信(≥0.75，认名+学习)' "
+            " WHEN speaker_match_score >= 0.65 THEN '认名未学习(0.65-0.75)' "
+            " WHEN speaker_match_score >= 0.50 THEN '疑似(0.50-0.65)' "
+            " ELSE '未识别(<0.50，新建unknown)' END AS band, "
+            " COUNT(*) AS n FROM transcripts GROUP BY band")]
+        sp_utt = {str(r["speaker"]): int(r["c"]) for r in conn.execute(
+            "SELECT speaker, COUNT(*) AS c FROM transcripts GROUP BY speaker")}
+    clusters = list_clusters_view()
+    named: dict[str, list[dict]] = {}
+    unknown = skip = 0
+    for cl in clusters:
+        if cl.get("assigned_name"):
+            named.setdefault(str(cl["assigned_name"]), []).append(cl)
+        elif cl.get("skip_label"):
+            skip += 1
+        else:
+            unknown += 1
+
+    label_sets: dict[str, set[str]] = {}
+    for name, cls in named.items():
+        s = label_sets.setdefault(name, set())
+        s.add(str(name))
+        for c in cls:
+            s.add(str(c["label"]))
+
+    def person_utts(name: str) -> int:
+        return sum(sp_utt.get(spk, 0) for spk in label_sets.get(name, set()))
+
+    def cluster_utts(cl: dict) -> int:
+        n = sp_utt.get(str(cl["label"]), 0)
+        if cl.get("assigned_name"):
+            n += sp_utt.get(str(cl["assigned_name"]), 0)
+        return n
+
+    persons = [{
+        "姓名": name,
+        "声纹簇数": len(cls),
+        "样本数": sum(int(c.get("sample_count") or 0) for c in cls),
+        "发言数": person_utts(name),
+        "待重置簇": sum(1 for c in cls if c.get("reset_on_next_match")),
+    } for name, cls in sorted(named.items())]
+
+    return {
+        "bands": bands,
+        "total_clusters": len(clusters),
+        "named_persons": len(named),
+        "named_clusters": sum(len(v) for v in named.values()),
+        "unknown": unknown,
+        "skip": skip,
+        "no_sample": sum(1 for c in clusters if cluster_utts(c) == 0),
+        "pending_reset": sum(1 for c in clusters if c.get("reset_on_next_match")),
+        "persons": persons,
+    }
 
 
 def get_speaker_utterances(speakers: list[str], limit: int = 100) -> list[dict]:
@@ -1864,6 +1927,41 @@ elif page == "数据库":
         with st.expander("查看示例数据（最近 3 条）"):
             for r in get_recent_records(3):
                 st.json(r)
+
+    # ── 声纹匹配 · 学习看板（v2.79：只读统计，不参与标注流程，标注时无需看置信度） ──
+    c = panel("声纹匹配 · 学习看板", "系统自动认名与学习的只读统计；阈值只决定自动认不认/学不学，不改变标注操作")
+    with c:
+        ta = float(VOICEPRINT_CONFIG.get("threshold_auto", 0.65))
+        tr = float(VOICEPRINT_CONFIG.get("threshold_review", 0.50))
+        tl = float(VOICEPRINT_CONFIG.get("learn_threshold", 0.75))
+        st.markdown(
+            f"<div style='font-size:0.85rem;color:var(--fg-2);'>"
+            f"当前阈值：自动认名 ≥ {ta} ｜ 疑似 {tr}–{ta} ｜ 学习 ≥ {tl}"
+            f"（v2.79 解耦：{ta}–{tl} 之间只自动认名、不学习，防低置信/低质量样本污染簇向量）</div>",
+            unsafe_allow_html=True,
+        )
+        dash = get_voiceprint_dashboard()
+        if dash["bands"]:
+            st.markdown("**片段匹配得分分布**")
+            b_df = pd.DataFrame(dash["bands"]).rename(
+                columns={"band": "匹配得分档位", "n": "片段数"})
+            st.dataframe(b_df, width='stretch', hide_index=True)
+        else:
+            st.caption("暂无转录片段")
+        st.markdown("**声纹簇概况**")
+        ov = pd.DataFrame([{
+            "总声纹簇": dash["total_clusters"],
+            "已标注人数": dash["named_persons"],
+            "已标注簇": dash["named_clusters"],
+            "未标注": dash["unknown"],
+            "不标注": dash["skip"],
+            "无发言样本": dash["no_sample"],
+            "待重置簇": dash["pending_reset"],
+        }])
+        st.dataframe(ov, width='stretch', hide_index=True)
+        if dash["persons"]:
+            st.markdown("**已标注人员明细**")
+            st.dataframe(pd.DataFrame(dash["persons"]), width='stretch', hide_index=True)
 
 # ================================================================
 # 页 4 — 文件归档

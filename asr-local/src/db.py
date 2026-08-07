@@ -392,7 +392,7 @@ def list_clusters_view(db_path: Path | None = None) -> list[dict]:
     with connect(db_path) as conn:
         rows = conn.execute(
             "SELECT c.cluster_id, c.label, c.assigned_name, c.skip_label, c.sample_count, "
-            "c.created_at, p.gender, p.relation "
+            "c.reset_on_next_match, c.created_at, p.gender, p.relation "
             "FROM speaker_clusters c "
             "LEFT JOIN persons p ON p.person_name = c.assigned_name "
             "ORDER BY c.cluster_id").fetchall()

@@ -134,6 +134,9 @@ class VoiceprintEngine:
         不更新向量——避免低质量音源（低码率致分离/嵌入不准）把多人平均进同一簇造成污染。
         v2.76 改标即重置：命中带 reset_on_next_match 标记的已标注簇时，直接用当前样本
         替换向量（sample_count 回 1）并清除标记，重新播种后再恢复增量学习。
+        v2.79 学习阈值解耦：命中已标注簇时，得分 >= learn_threshold（默认 0.75）才增量
+        学习；[threshold_auto, learn_threshold) 之间只返回姓名、不学习（重置不受影响，
+        用户已人工确认身份，>= threshold_auto 即重新播种）。
         """
         if embedding is None:
             return MatchResult(None, "UNKNOWN", None, False)
@@ -166,8 +169,9 @@ class VoiceprintEngine:
                     best_c["vec"] = new_vec
                     best_c["sample_count"] = 1
                     best_c["reset_on_next_match"] = 0
-                else:
+                elif best_cs >= float(self.cfg.get("learn_threshold", 0.75)):
                     self._learn_into_cluster(best_c, embedding)  # 仅已标注簇持续学习（v2.75）
+                # else: [threshold_auto, learn_threshold) 只认名、不学习（v2.79）
             if best_c["assigned_name"]:
                 return MatchResult(best_c["cluster_id"], best_c["assigned_name"], best_cs, False)
             return MatchResult(best_c["cluster_id"], best_c["label"], best_cs, False)
