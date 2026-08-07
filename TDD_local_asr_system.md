@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.85  
+**版本**: v2.86  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -759,6 +759,7 @@ MEMORY_CONFIG = {
 | v2.83 | 2026-08-07 | **未加载 .env 时 connect() 直接报错（db.py §4.8）**: ① `connect()` 判定改为「无显式 `db_path` + 未设 `ASR_ARCHIVE`」即抛 `RuntimeError`（指引 source .env / run.sh / systemd / 显式 db_path），不执行 `ensure_parent_dir`、不创建 `~/audio_archive` 默认路径空库——v2.47 告警实测复发（2026-08-07 11:01 临时查询制造 0 字节空库）后升级；② 行为验证：无 env 调用抛错且不建目录，`source .env` 后正常连接；③ 部署验证：db.py/run.sh 两端 md5 一致，服务重启 active + HTTP 200；UI_VERSION 无需改（未动 webui.py） |
 | v2.84 | 2026-08-07 | **批处理可恢复性 + 一键重新入队（webui.py / process_inbox.py / systemd §3.6 / §4.8 / PRD FR-008-M）**: ① `asr-webui.service` 加 `KillMode=process`——重启服务只杀 webui 主进程，webui 启动的 `process_inbox.py` 不再被 SIGTERM 连坐（2026-08-07 16:05 实战：v2.83 部署重启把运行中批处理杀成 Diarization 失败、文件移入 error/）；② 锁文件 PID 感知——webui `inbox_processing()` 与 `process_inbox._acquire_lock()` 均按「PID 存活且 cmdline 含 process_inbox.py」判定有效锁，否则视为陈旧立即接管（崩溃/SIGKILL 后无需等 6 小时）；③ 新增 `requeue_failed_files()` + 收件箱面板「↩️ 失败文件重新入队并处理」按钮——error/ 当前批次失败音频移回收件箱并启动（.error.txt 留待归档）；④ 行为验证：死 PID 锁立即接管、活 PID 锁拒绝双开、重新入队按钮移动文件并触发处理；⑤ 部署验证：webui.py/process_inbox.py/unit 两端一致，daemon-reload + 服务重启 active + HTTP 200；UI_VERSION 更新（v2.84 部署） |
 | v2.85 | 2026-08-07 | **WebUI 轻量化——移除片段试听（webui.py §1.7 / §4.7 / PRD §8.2 页3/页4）**: ① 删除 `render_segment_audio()` 及其两处调用（数据库页「试听发言」+ 文件归档搜索片段回放）——soundfile 整文件读入再切片，大音频加载重/易失败（「无法加载音频片段」根因）；② 「声纹簇·标注学习」发言列表仅对未标注簇渲染（`unlabeled = clusters 非空且无 assigned_name 且非 skip_label`），已标注/不标注显示提示、不再加载音频；③ 文件归档「浏览归档文件」归档音频新增整段回放（`st.audio` 直接喂路径，浏览器拖动进度，不做段偏移）+ 滚动字幕（`audio_path`/`archive_name` 匹配 transcripts，说话人经显示层映射）；④ 部署验证：webui.py 两端 md5 一致，AppTest 页 3/页 4 渲染 0 异常，HTTP 200；UI_VERSION 更新（v2.85 部署） |
+| v2.86 | 2026-08-07 | **文件归档体验增强（webui.py §4.7 / PRD §8.2 页4）**: ① 浏览归档文件月份 `<details>` 展开内容包一层限高 div（`max-height:300px; overflow-y:auto`）——文本备份/归档音频按月折叠后不再撑开页面；② 归档音频字幕**随播放自动滚动 + 当前句高亮**——转录行带 `data-start/data-end`（`segment_start_offset/end_offset`），客户端 JS 监听 `<audio>.timeupdate` 命中当前行 `scrollIntoView({block:'center',behavior:'smooth'})` + `.active` 高亮，纯前端、零服务端开销（SQL 仅补两列偏移字段）；③ 部署验证：webui.py 两端 md5 一致，AppTest 页 4 渲染 0 异常，HTTP 200；UI_VERSION 更新（v2.86 部署） |
 
 ---
 

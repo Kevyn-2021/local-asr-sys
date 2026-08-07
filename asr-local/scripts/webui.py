@@ -2123,7 +2123,8 @@ elif page == "文件归档":
                 groups.append(
                     f"<details class='archive-month'>"
                     f"<summary>{month}（{len(mfiles)} 个文件）</summary>"
-                    + "".join(rows) + "</details>"
+                    f"<div style='max-height:300px;overflow-y:auto;'>"
+                    + "".join(rows) + "</div></details>"
                 )
             st.markdown("".join(groups), unsafe_allow_html=True)
 
@@ -2132,7 +2133,7 @@ elif page == "文件归档":
                 if audio_files:
                     st.markdown(
                         "<div style='font-size:0.85rem;color:var(--fg-3);margin:14px 0 4px 0;'>"
-                        "选择归档音频回听整段（浏览器可拖动进度；下方为滚动字幕）：</div>",
+                        "选择归档音频回听整段（字幕随播放自动滚动，可拖动进度）：</div>",
                         unsafe_allow_html=True,
                     )
                     sel_a = st.selectbox(
@@ -2148,25 +2149,54 @@ elif page == "文件归档":
                         st.warning("无法加载音频")
                     with connect() as conn:
                         segs = [dict(r) for r in conn.execute(
-                            "SELECT speaker, text, absolute_start_time, absolute_end_time "
+                            "SELECT speaker, text, absolute_start_time, absolute_end_time, "
+                            "segment_start_offset, segment_end_offset "
                             "FROM transcripts WHERE audio_path=? OR archive_name=? "
-                            "ORDER BY absolute_start_time",
+                            "ORDER BY segment_start_offset",
                             (af["path"], af["name"])).fetchall()]
                     if segs:
                         sp_map_a = speaker_display_map()
                         lines = []
                         for s in segs:
                             who = disp_speaker(str(s["speaker"]), sp_map_a)
+                            start_off = float(s.get("segment_start_offset") or 0)
+                            end_off = float(s.get("segment_end_offset") or start_off)
                             lines.append(
-                                f"<div class='seg-line'>"
+                                f"<div class='seg-line' data-start='{start_off:.3f}' data-end='{end_off:.3f}'>"
                                 f"<span style='color:var(--fg-2);'>{fmt_full_time(s['absolute_start_time'])}"
                                 f" - {fmt_full_time(s['absolute_end_time'])}</span> "
                                 f"<strong>{html.escape(who)}</strong>：{clean_text(s['text'])}</div>"
                             )
                         st.markdown(
-                            "<div style='margin-top:8px;padding:12px 16px;background:var(--bg-subtle);"
-                            "border-radius:6px;font-size:0.95rem;line-height:1.9;"
-                            "max-height:420px;overflow-y:auto;'>" + "".join(lines) + "</div>",
+                            "<style>.seg-line.active{background:rgba(184,106,72,0.16);}</style>"
+                            "<div id='arch-sub' style='margin-top:8px;padding:12px 16px;"
+                            "background:var(--bg-subtle);border-radius:6px;font-size:0.95rem;"
+                            "line-height:1.9;max-height:420px;overflow-y:auto;'>"
+                            + "".join(lines) + "</div>"
+                            "<script>"
+                            "(function(){"
+                            "var box=document.getElementById('arch-sub');"
+                            "if(!box)return;"
+                            "var segs=Array.prototype.slice.call(box.querySelectorAll('.seg-line'));"
+                            "if(!segs.length)return;"
+                            "var root=box.closest('[data-testid=\"stVerticalBlock\"]')||document.body;"
+                            "var audio=root.querySelector('audio')||document.querySelector('audio');"
+                            "if(!audio)return;"
+                            "audio.addEventListener('timeupdate',function(){"
+                            "var t=audio.currentTime,cur=null;"
+                            "for(var i=0;i<segs.length;i++){"
+                            "var s=parseFloat(segs[i].getAttribute('data-start'));"
+                            "var e=parseFloat(segs[i].getAttribute('data-end'));"
+                            "if(t>=s&&t<e){cur=segs[i];break;}"
+                            "}"
+                            "for(var j=0;j<segs.length;j++)segs[j].classList.remove('active');"
+                            "if(cur){cur.classList.add('active');"
+                            "if(cur.scrollIntoView){"
+                            "cur.scrollIntoView({block:'center',behavior:'smooth'});}"
+                            "}"
+                            "});"
+                            "})();"
+                            "</script>",
                             unsafe_allow_html=True,
                         )
                     else:
