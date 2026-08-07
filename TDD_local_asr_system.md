@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.80  
+**版本**: v2.81  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -369,8 +369,8 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
 
 #### 匹配机制
 - 对每个 Diarization 输出的说话人，聚合全部片段提取声纹向量
-- 与声纹库逐一计算余弦相似度（三档阈值配置于 `config/settings.py` `VOICEPRINT_CONFIG`；v2.25 自 0.75/0.60 调低为 0.65/0.50，提高同一声纹跨录音的自动关联成功率，误关联可由 Web「校准已标注」手工改回）：
-  - `score >= 0.65` → 自动标注
+- 与声纹库逐一计算余弦相似度（阈值配置于 `config/settings.py` `VOICEPRINT_CONFIG`；自动 0.65 / 疑似 0.50（v2.25 自 0.75/0.60 调低）/ 学习 0.75（v2.79 认名与学习解耦））：
+  - `score >= 0.65` → 自动认名（命中已标注簇且 `>= 0.75` 才学习，见下方「标注学习与向量更新」；`0.65–0.75` 只认名不学习）
   - `0.50 <= score < 0.65` → 疑似待确认
   - `score < 0.50` → 未识别，进入声纹簇流程
 
@@ -751,6 +751,7 @@ MEMORY_CONFIG = {
 | v2.78 | 2026-08-07 | **声纹标注说话人下拉优化（webui.py §1.7 / PRD FR-003-CLUSTER、§8.2 页3）**: ① 选项构建重构——已标注按 `assigned_name` 合并为一行（`named_groups` + `raws=[姓名]+全部 label`），未标注/不标注 unknown 各自一行；新增「显示无发言样本的说话人」复选框（默认隐藏，`sp_utt` 统计 transcripts.speaker 计数判断）；排序：未标注 → 已标注（按姓名）→ 不标注 → 声纹库命名；② 标注操作区对合并姓名展示簇清单（对应 N 个声纹簇），改标/改回**批量作用于全部同名簇**并汇总回填数；单簇标注/不标注逻辑不变；③ 部署验证：webui.py 两端 md5 一致，服务重启 active + HTTP 200 + 日志无异常；实测下拉 46 → 20 行（KevinZH 18 簇合并为 1 行） |
 | v2.79 | 2026-08-07 | **认名/学习阈值解耦 + 声纹看板（settings.py / voiceprint.py / db.py / webui.py §3.3 / §1.7）**: ① `VOICEPRINT_CONFIG` 新增 `learn_threshold: 0.75`（可改）；`match_speaker` 命中已标注簇时 `>= learn_threshold` 才 `_learn_into_cluster`，`[threshold_auto, learn_threshold)` 只认名不学；改标重置（`reset_on_next_match`）≥ auto 即重新播种、不受学习阈值限制；② `list_clusters_view` 补 `reset_on_next_match`（看板待重置计数）；③ 新增 `get_voiceprint_dashboard()` + 数据库页底部「声纹匹配 · 学习看板」面板（片段得分分布 / 簇概况 / 人员明细）；④ 部署验证：四文件两端 md5 一致，服务重启 active + HTTP 200，行为测试（0.70 不学 / 0.80 学 / 重置 0.70 重播种）通过 |
 | v2.80 | 2026-08-07 | **声纹看板按人员展示（webui.py §1.7 / PRD FR-003-CLUSTER、§8.2 页3）**: ① `get_voiceprint_dashboard()` 重写——按已标注人员聚合（姓名 + 全部簇 label）统计片段得分分档（高置信/认名未学习/疑似/未识别/无得分/合计/待重置簇），附（全部）合计行；② 面板改为阈值行 + 按人员主表 + 概况小字（移除总声纹簇表）；③ 修复合计行待重置簇混入字符串导致 st.dataframe Arrow 序列化失败、表格被裁的问题（统一 int）；④ 部署验证：webui.py 两端 md5 一致，服务重启 active，AppTest 数据库页 0 异常、看板 10 行（9 人 + 合计）完整渲染；UI_VERSION 2026-08-07-13:35:07 |
+| v2.81 | 2026-08-07 | **五端一致性 Review（文档工程）**: ① TDD §3.3 匹配机制"三档阈值 0.65/0.50"补 v2.79 学习阈值 0.75，改为"自动 0.65 / 疑似 0.50 / 学习 0.75（认名与学习解耦）"，并指明 `0.65–0.75` 只认名不学习；② 全量运行时文件 md5 复核——26 个文件两端一致（deploy_webui.sh 为 Mac 侧工具按设计不同步）；③ SEC（gitignored）白名单更新为当前 MacBook 办公室地址；交接文档（gitignored）刷新至 v2.80 口径；④ PRD/TDD 版本头与 changelog 核对一致（v1.0→v2.81） |
 
 ---
 
