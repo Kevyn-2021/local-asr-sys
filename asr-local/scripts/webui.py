@@ -1226,21 +1226,6 @@ def panel(title: str, desc: str = ""):
     return c
 
 
-def render_segment_audio(row: dict):
-    p = row.get("audio_path")
-    if p and Path(p).exists():
-        try:
-            import soundfile as sf
-            y, sr = sf.read(p, always_2d=False)
-            s = max(0, int(row["segment_start_offset"] * sr))
-            e = min(len(y), int(row["segment_end_offset"] * sr))
-            st.audio(y[s:e], sample_rate=sr, format="audio/wav")
-        except Exception:
-            st.warning("无法加载音频片段")
-    else:
-        st.info("该片段无对应音频文件")
-
-
 def render_full_audio(a: dict):
     """整段音频回放（v2.67 详情页）：不按片段切分，用户按文本时间戳自行拖动"""
     p = a.get("audio_path")
@@ -1798,47 +1783,48 @@ elif page == "数据库":
             opt_disps = [o["disp"] for o in options]
             sel_disp = st.selectbox("说话人", opt_disps, key="clu_sp_filter")
             sel = options[opt_disps.index(sel_disp)]
+            cls0 = sel["clusters"][0] if sel["clusters"] else None
+            # v2.85 轻量化：只有未标注簇提供发言文字辅助标注；已标注/不标注不再
+            # 加载任何音频片段，听音频统一去「文件归档」回听整段（含滚动字幕）。
+            unlabeled = bool(cls0) and not cls0.get("assigned_name") and not cls0.get("skip_label")
 
-            # ── 该说话人的发言 ──
-            utts = get_speaker_utterances(sel["raws"], limit=100)
-            st.markdown(
-                f"<div style='font-size:0.85rem;color:var(--fg-2);margin:2px 0 6px 0;'>"
-                f"该说话人共 {len(utts)} 条发言（最新 100 条）</div>",
-                unsafe_allow_html=True,
-            )
-            if not utts:
-                st.info("该说话人在现有转录里没有发言记录")
-            else:
-                lines = []
-                for r in utts:
-                    who = disp_speaker(str(r["speaker"]), sp_map)
-                    lines.append(
-                        f"<div class='seg-line'>"
-                        f"<span style='color:var(--fg-2);'>{fmt_full_time(r['absolute_start_time'])}"
-                        f" - {fmt_full_time(r['absolute_end_time'])}</span> "
-                        f"<span style='color:var(--fg-3);font-size:0.82rem;'>{html.escape(who)}"
-                        f" · {html.escape(str(r['source_file']))}</span><br>"
-                        f"{clean_text(r['text'])}</div>"
-                    )
+            # ── 该说话人的发言（仅未标注簇展示）──
+            if unlabeled:
+                utts = get_speaker_utterances(sel["raws"], limit=100)
                 st.markdown(
-                    "<div style='padding:12px 16px;background:var(--bg-subtle);border-radius:6px;"
-                    "font-size:0.95rem;line-height:1.8;max-height:420px;overflow-y:auto;'>"
-                    + "".join(lines) + "</div>",
+                    f"<div style='font-size:0.85rem;color:var(--fg-2);margin:2px 0 6px 0;'>"
+                    f"该说话人共 {len(utts)} 条发言（倒序）</div>",
                     unsafe_allow_html=True,
                 )
-
-            # ── 试听发言（v2.69）：标注前先听声音确认是谁，不用靠文字猜 ──
-            if utts:
-                utt_opts = {r["id"]: f"[{fmt_full_time(r['absolute_start_time'])}] {clean_text(r['text'], 24)}"
-                            for r in utts}
-                sel_utt = st.selectbox(
-                    "🎧 试听发言（听声音确认说话人；无需记 ID，按时间与文字预览选即可）",
-                    list(utt_opts),
-                    format_func=lambda k: utt_opts[k],
-                    key="utt_listen",
-                )
-                row_utt = next(r for r in utts if r["id"] == sel_utt)
-                render_segment_audio(row_utt)
+                if not utts:
+                    st.info("该说话人在现有转录里没有发言记录")
+                else:
+                    lines = []
+                    for r in utts:
+                        who = disp_speaker(str(r["speaker"]), sp_map)
+                        lines.append(
+                            f"<div class='seg-line'>"
+                            f"<span style='color:var(--fg-2);'>{fmt_full_time(r['absolute_start_time'])}"
+                            f" - {fmt_full_time(r['absolute_end_time'])}</span> "
+                            f"<span style='color:var(--fg-3);font-size:0.82rem;'>{html.escape(who)}"
+                            f" · {html.escape(str(r['source_file']))}</span><br>"
+                            f"{clean_text(r['text'])}</div>"
+                        )
+                    st.markdown(
+                        "<div style='padding:12px 16px;background:var(--bg-subtle);border-radius:6px;"
+                        "font-size:0.95rem;line-height:1.8;max-height:420px;overflow-y:auto;'>"
+                        + "".join(lines) + "</div>",
+                        unsafe_allow_html=True,
+                    )
+            elif cls0:
+                if cls0.get("assigned_name"):
+                    st.info(
+                        f"「{html.escape(str(cls0['assigned_name']))}」已标注，不再加载音频片段。"
+                        "如需听音频确认，请到「文件归档」页回听整段音频（含滚动字幕）。")
+                else:
+                    st.info(
+                        "该说话人已设为不标注，不再加载音频片段。"
+                        "如需听音频，请到「文件归档」页回听整段音频。")
 
             # ── 标注区（命中声纹簇才可标注） ──
             st.divider()
@@ -2112,22 +2098,7 @@ elif page == "文件归档":
                         f"</div>"
                     )
                 st.markdown("".join(items), unsafe_allow_html=True)
-
-                st.markdown(
-                    "<div style='font-size:0.85rem;color:var(--fg-3);margin:14px 0 4px 0;'>"
-                    "回放某条结果对应的音频片段：</div>",
-                    unsafe_allow_html=True,
-                )
-                idx = st.selectbox(
-                    "选择结果",
-                    range(min(len(results), 50)),
-                    format_func=lambda i: (
-                        f"#{results[i]['id']} · {results[i]['speaker']} · "
-                        f"{results[i]['absolute_start_time'][:19].replace('T', ' ')}"
-                    ),
-                    label_visibility="collapsed",
-                )
-                render_segment_audio(results[idx])
+                st.caption("听音频请到下方「浏览归档文件」选择归档音频回听整段（含滚动字幕）。")
 
     c = panel("浏览归档文件", "按月份分组的文本备份与归档音频")
     with c:
@@ -2155,6 +2126,51 @@ elif page == "文件归档":
                     + "".join(rows) + "</details>"
                 )
             st.markdown("".join(groups), unsafe_allow_html=True)
+
+            if browse == "归档音频":
+                audio_files = [f for f in files if f["suffix"].lower() in SUPPORTED_EXTENSIONS]
+                if audio_files:
+                    st.markdown(
+                        "<div style='font-size:0.85rem;color:var(--fg-3);margin:14px 0 4px 0;'>"
+                        "选择归档音频回听整段（浏览器可拖动进度；下方为滚动字幕）：</div>",
+                        unsafe_allow_html=True,
+                    )
+                    sel_a = st.selectbox(
+                        "回听音频",
+                        range(len(audio_files)),
+                        format_func=lambda i: f"{audio_files[i]['month']} / {audio_files[i]['name']}",
+                        label_visibility="collapsed", key="arch_audio_sel",
+                    )
+                    af = audio_files[sel_a]
+                    try:
+                        st.audio(af["path"])
+                    except Exception:
+                        st.warning("无法加载音频")
+                    with connect() as conn:
+                        segs = [dict(r) for r in conn.execute(
+                            "SELECT speaker, text, absolute_start_time, absolute_end_time "
+                            "FROM transcripts WHERE audio_path=? OR archive_name=? "
+                            "ORDER BY absolute_start_time",
+                            (af["path"], af["name"])).fetchall()]
+                    if segs:
+                        sp_map_a = speaker_display_map()
+                        lines = []
+                        for s in segs:
+                            who = disp_speaker(str(s["speaker"]), sp_map_a)
+                            lines.append(
+                                f"<div class='seg-line'>"
+                                f"<span style='color:var(--fg-2);'>{fmt_full_time(s['absolute_start_time'])}"
+                                f" - {fmt_full_time(s['absolute_end_time'])}</span> "
+                                f"<strong>{html.escape(who)}</strong>：{clean_text(s['text'])}</div>"
+                            )
+                        st.markdown(
+                            "<div style='margin-top:8px;padding:12px 16px;background:var(--bg-subtle);"
+                            "border-radius:6px;font-size:0.95rem;line-height:1.9;"
+                            "max-height:420px;overflow-y:auto;'>" + "".join(lines) + "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.caption("该音频暂无对应转录片段（或尚未入库）")
 
             if browse == "文本备份":
                 txt_files = [f for f in files if f["suffix"] == ".txt"]

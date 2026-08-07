@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.84  
+**版本**: v2.85  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -183,12 +183,13 @@ def apply_cluster_label(cluster_id, target):
 - **回填匹配串的选择**：簇从未标注过 → transcripts 中记录是 `label`（pipeline 写入），匹配 `label`；已标注过 → 记录已被回填为姓名，匹配**姓名**。改回时用 `old_name` 匹配、回填到 `label`。
 - **边界说明**：若同一姓名被标到多个簇，改回/改标会按姓名全局替换（UI 已提示"该姓名的记录将改回编号"）——属合理近似，用户可随后逐个再标注。
 
-**UI（「声纹簇·标注学习」面板，v2.20 起 / v2.68 重构为单流程 / v2.69 加试听）**：
-布局按「筛选说话人 → 查看发言 → 试听确认 → 直接标注」组织（见 [PRD §8.2 页 3](./PRD_local_asr_system.md#82-系统看板布局ui-v20)），此处仅记录实现要点：
+**UI（「声纹簇·标注学习」面板，v2.20 起 / v2.68 重构为单流程 / v2.85 轻量化）**：
+布局按「筛选说话人 → 查看发言（仅未标注簇）→ 直接标注」组织（见 [PRD §8.2 页 3](./PRD_local_asr_system.md#82-系统看板布局ui-v20)），此处仅记录实现要点：
 - **说话人下拉（v2.78 优化）**：已标注人员按 `assigned_name` **合并为一行**（同名多簇：`raws = [姓名] + 全部 label`，发言聚合展示）；未标注/不标注的 unknown 各自一行；**无发言样本的簇默认隐藏**（`sp_utt` 按 transcripts.speaker 计数判断，勾选「显示无发言样本的说话人」可显示，供清理/改名）；排序 = 未标注（按编号）→ 已标注（按姓名）→ 不标注（按编号）→ 声纹库命名；标注操作区对合并姓名展示簇清单，改标/改回**批量作用于全部同名簇**并汇总回填数（与 `apply_cluster_label` 按姓名全局回填一致）
 - **发言列表**：`get_speaker_utterances(raws, limit=100)` 按 `speaker IN (label[, assigned_name])` 查询，绝对时间倒序
 - **声纹匹配 · 学习看板（v2.79 起 / v2.80 按人展示）**：数据库页底部只读面板——顶部阈值行（认名 ≥0.65 ｜ 疑似 0.50–0.65 ｜ 学习 ≥0.75，读 `VOICEPRINT_CONFIG`）；主表**按已标注人员**逐行展示其片段 `speaker_match_score` 分档（≥0.75 高置信 / 0.65–0.75 认名未学习 / 0.50–0.65 疑似 / <0.50 未识别 / 无得分 / 合计 / 待重置簇），每行聚合"姓名 + 该人全部簇 label"（`get_voiceprint_dashboard()` 一次性加载全部 (speaker, score) 后 Python 分档），末行（全部）合计；底部小字概况（已标注人数/未标注/不标注/无发言样本簇/待重置簇，`list_clusters_view` 含 `reset_on_next_match`）；标注流程不展示置信度
-- **「🎧 试听发言」**（v2.69）：下拉按「时间 + 文字预览」选一条，`render_segment_audio()` 按 `segment_start_offset/end_offset` 从 `audio_path` 切段播放（内部以 `transcripts.id` 为键，不展示）
+- **发言列表仅未标注簇渲染（v2.85）**：`unlabeled = clusters 非空且无 assigned_name 且非 skip_label` 才调 `get_speaker_utterances()`；已标注/不标注显示提示「请到文件归档回听整段」、不再加载任何音频片段
+- **「🎧 试听发言」已移除（v2.69 加 → v2.85 删）**：原按 `segment_start_offset/end_offset` 从 `audio_path` 切段播放（`render_segment_audio()` 用 soundfile **整文件读入再切片**——大音频加载重/易失败，是「无法加载音频片段」根因）；v2.85 起删除该函数及全部调用（数据库页试听 + 文件归档搜索片段回放），听音频统一到「文件归档」整段回放（`st.audio` 直接喂路径，不做段偏移）
 - **标注操作区**（按簇渲染）：未标注 →「标注并回填」+「🚫 设为不标注」；已标注 →「改标并回填」+「改回未知（沿用编号 {label}）」；不标注中 →「↩️ 恢复标注」；改回未知为**两步确认**（`st.session_state[f"unassign_{cluster_id}"]`），操作统一走 `apply_cluster_label()` 与 `set_cluster_skip()`
 - **改标即重置（v2.76 / v2.82 补清除）**：`apply_cluster_label` 的标注/改标分支统一走 `assign_cluster_name()`——"改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置 `reset_on_next_match=1`，下次处理命中时重置向量（实现见 §3.3）；`unassign_cluster_name`（改回未知）**同时清 `reset_on_next_match=0`**——休眠标记不再让看板「待重置簇」误计未标注簇，再标注时按规则重新置位
 - **不标注语义（v2.43 / v2.75 修正）**：`skip_label=1` 是独立于标注的标记——不写 `assigned_name`、不改 `label`/`embedding`，**不触发任何 transcripts 回填**（编号未变）；匹配层（`voiceprint.py`）照常参与匹配（`load_all_clusters` 仍返回全部簇、沿用编号）但 **v2.75 起不参与向量学习**（与纯 unknown 一致）；不标注簇在说话人下拉显示「🚫 不标注」且标注入口隐藏，恢复标注即 `set_cluster_skip(cid, False)`、入口重新出现（标注→改回→再标注仍全程可逆）
@@ -380,7 +381,7 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
 - **认名/学习阈值解耦（v2.79）**：命中已标注簇时，`score >= learn_threshold`（默认 0.75，`VOICEPRINT_CONFIG.learn_threshold`，可改）才增量学习；`[threshold_auto, learn_threshold)`（0.65–0.75）只返回姓名、不学习；改标重置（`reset_on_next_match`）**不受学习阈值限制**——用户已人工确认身份，`>= threshold_auto` 即重新播种。
 - **只学已标注簇（v2.75）**：`match_speaker` 命中声纹簇且 `score >= 0.65` 时，**仅当簇已标注（`assigned_name` 非空）才调用 `_learn_into_cluster` 做增量平均**（`new_vec = (旧vec×n + 新vec)/(n+1)`，`sample_count+1`）；纯 unknown / 已取消标注 / skip_label（不标注）簇只返回编号、不更新向量。原因：低质量音源（16kHz 但 32kbps mp3 实测）分离/嵌入不准，3 个说话人会被并成一个簇，若照常学习会把多人向量平均进同一簇造成污染（v2.74 实测 unknown_0044 被 1.5h 低码率音频污染 1 次）。用户标注后该簇重新进入学习。
 - **改标即重置（v2.76 / v2.82 补清除）**：`speaker_clusters` 新增 `reset_on_next_match INTEGER DEFAULT 0`（SCHEMA_SQL + `init_db()` 老库 ALTER 迁移），`load_all_clusters()` 读取该字段。`assign_cluster_name()` 在"原已标注且改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置位（同名重指派不重置）；`match_speaker` 命中带标记的已标注簇时调 `reset_cluster_vector()`——embedding **直接替换**、`sample_count=1`、清标记——否则走 v2.75 增量学习。纯新建簇（`sample_count=1`）首次标注不重置，保留该文件作为身份依据。`unassign_cluster_name()`（改回未知）同时清 `reset_on_next_match=0`（v2.82），再标注时按规则重新置位。原因：改标前旧姓名期间累积的样本无法逐条撤销，不重置就只能靠稀释，混合向量会持续带偏匹配、越用越不准。
-- **无发言样本的声纹簇（v2.75 记录）**：簇在声纹匹配阶段创建（`register_new_cluster` 立即持久化），早于 ASR 转录入库；转录未产出行（ASR 无文本 / 文件失败 / 批次中断）时该簇无关联 transcript → WebUI「声纹簇·标注学习」中显示 0 条发言、无音频可试听（如 unknown_0046）。身份追踪与转录成功解耦属预期，不影响匹配；若干扰可后续增加"清理无样本簇"运维功能。
+- **无发言样本的声纹簇（v2.75 记录）**：簇在声纹匹配阶段创建（`register_new_cluster` 立即持久化），早于 ASR 转录入库；转录未产出行（ASR 无文本 / 文件失败 / 批次中断）时该簇无关联 transcript → WebUI「声纹簇·标注学习」中显示 0 条发言（v2.85 起不提供片段试听，如 unknown_0046）。身份追踪与转录成功解耦属预期，不影响匹配；若干扰可后续增加"清理无样本簇"运维功能。
 - **行为测试（v2.76 通过，临时库）**：① 新建簇首次标注 → 不重置；② 改标为他人 → 置位；③ 同名重指派 → 不置位；④ 累积簇（`sample_count>1`）标注 → 置位；⑤ 命中待重置簇 → 向量替换、`sample_count=1`、清标记、不学习；⑥ 下次命中 → 恢复正常增量学习（`sample_count=2`）。
 
 ### 3.4 ASR — Qwen3-ASR-1.7B
@@ -757,6 +758,7 @@ MEMORY_CONFIG = {
 | v2.82 | 2026-08-07 | **改回未知清除待重置标记（db.py §1.7 / §3.3 / PRD FR-003-CLUSTER）**: ① `unassign_cluster_name` UPDATE 增加 `reset_on_next_match=0`——改回未知后休眠标记不再让看板「待重置簇」误计未标注簇（v2.80 起按人员看板 + v2.76 重置标记的联动细节）；② 存量数据清理：`UPDATE speaker_clusters SET reset_on_next_match=0 WHERE assigned_name IS NULL`（幂等，unknown_0044 等）；③ 行为验证：标注→置位 / 改回→清零 / 再标注→重新置位 / 命中→重播种，临时库六步通过；④ 部署验证：db.py 两端 md5 一致，服务重启 active + HTTP 200；UI_VERSION 无需改（未动 webui.py） |
 | v2.83 | 2026-08-07 | **未加载 .env 时 connect() 直接报错（db.py §4.8）**: ① `connect()` 判定改为「无显式 `db_path` + 未设 `ASR_ARCHIVE`」即抛 `RuntimeError`（指引 source .env / run.sh / systemd / 显式 db_path），不执行 `ensure_parent_dir`、不创建 `~/audio_archive` 默认路径空库——v2.47 告警实测复发（2026-08-07 11:01 临时查询制造 0 字节空库）后升级；② 行为验证：无 env 调用抛错且不建目录，`source .env` 后正常连接；③ 部署验证：db.py/run.sh 两端 md5 一致，服务重启 active + HTTP 200；UI_VERSION 无需改（未动 webui.py） |
 | v2.84 | 2026-08-07 | **批处理可恢复性 + 一键重新入队（webui.py / process_inbox.py / systemd §3.6 / §4.8 / PRD FR-008-M）**: ① `asr-webui.service` 加 `KillMode=process`——重启服务只杀 webui 主进程，webui 启动的 `process_inbox.py` 不再被 SIGTERM 连坐（2026-08-07 16:05 实战：v2.83 部署重启把运行中批处理杀成 Diarization 失败、文件移入 error/）；② 锁文件 PID 感知——webui `inbox_processing()` 与 `process_inbox._acquire_lock()` 均按「PID 存活且 cmdline 含 process_inbox.py」判定有效锁，否则视为陈旧立即接管（崩溃/SIGKILL 后无需等 6 小时）；③ 新增 `requeue_failed_files()` + 收件箱面板「↩️ 失败文件重新入队并处理」按钮——error/ 当前批次失败音频移回收件箱并启动（.error.txt 留待归档）；④ 行为验证：死 PID 锁立即接管、活 PID 锁拒绝双开、重新入队按钮移动文件并触发处理；⑤ 部署验证：webui.py/process_inbox.py/unit 两端一致，daemon-reload + 服务重启 active + HTTP 200；UI_VERSION 更新（v2.84 部署） |
+| v2.85 | 2026-08-07 | **WebUI 轻量化——移除片段试听（webui.py §1.7 / §4.7 / PRD §8.2 页3/页4）**: ① 删除 `render_segment_audio()` 及其两处调用（数据库页「试听发言」+ 文件归档搜索片段回放）——soundfile 整文件读入再切片，大音频加载重/易失败（「无法加载音频片段」根因）；② 「声纹簇·标注学习」发言列表仅对未标注簇渲染（`unlabeled = clusters 非空且无 assigned_name 且非 skip_label`），已标注/不标注显示提示、不再加载音频；③ 文件归档「浏览归档文件」归档音频新增整段回放（`st.audio` 直接喂路径，浏览器拖动进度，不做段偏移）+ 滚动字幕（`audio_path`/`archive_name` 匹配 transcripts，说话人经显示层映射）；④ 部署验证：webui.py 两端 md5 一致，AppTest 页 3/页 4 渲染 0 异常，HTTP 200；UI_VERSION 更新（v2.85 部署） |
 
 ---
 
