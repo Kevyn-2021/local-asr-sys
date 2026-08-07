@@ -913,13 +913,33 @@ def scan_inbox_files() -> list[dict]:
 
 
 def inbox_processing() -> bool:
-    """是否有手动处理任务正在进行（锁文件 6 小时内视为有效）"""
+    """是否有手动处理任务正在进行（锁文件存在且持有 PID 存活；v2.84 起进程已死即视为陈旧）"""
     try:
         if not INBOX_LOCK.exists():
             return False
-        return (time.time() - INBOX_LOCK.stat().st_mtime) < 6 * 3600
+        return not _lock_is_stale(INBOX_LOCK)
     except Exception:
         return False
+
+
+def _lock_is_stale(path: Path) -> bool:
+    """锁文件陈旧判定：超过 6 小时，或持有 PID 已不存在（崩溃/SIGKILL 等）即视为陈旧。
+    v2.84：PID 存活且确为 process_inbox 进程才算有效锁，否则可立即接管/删除。"""
+    try:
+        if not path.exists():
+            return False
+        if (time.time() - path.stat().st_mtime) >= 6 * 3600:
+            return True
+        pid_txt = path.read_text(encoding="utf-8").strip()
+        if not pid_txt.isdigit():
+            return True
+        with open(f"/proc/{pid_txt}/cmdline", "rb") as f:
+            cmd = f.read().decode("utf-8", errors="ignore")
+        return "process_inbox.py" not in cmd
+    except FileNotFoundError:
+        return True  # 持有进程已不存在 → 陈旧
+    except Exception:
+        return False  # /proc 不可读等异常 → 保守视为运行中
 
 
 def trigger_process_inbox() -> tuple[bool, str]:
@@ -960,7 +980,8 @@ def prepare_inbox() -> tuple[bool, str]:
     # 1. 归档错误文件
     archived = archive_error_files()
 
-    # 2. 解锁：只有"非处理中"时才能删锁（新鲜锁视为任务运行中，不碰）
+    # 2. 解锁：只有"非处理中"时才能删锁（PID 存活的新鲜锁视为任务运行中，不碰；
+    #    v2.84 起持有进程已死的锁视为陈旧，无需等 6 小时即可删除）
     unlocked = False
     if INBOX_LOCK.exists() and not inbox_processing():
         try:
@@ -981,6 +1002,27 @@ def prepare_inbox() -> tuple[bool, str]:
     else:
         parts.append("锁文件不存在，无需解锁")
     return True, "；".join(parts)
+
+
+def requeue_failed_files() -> tuple[int, list[str]]:
+    """把 error/ 根目录当前批次的失败音频移回收件箱根目录（v2.84）。
+    返回 (成功数, 失败明细)；.error.txt 日志留在 error/，由下轮归档。"""
+    moved = 0
+    failed = []
+    if not INBOX_ERROR_DIR.exists():
+        return 0, failed
+    for p in sorted(INBOX_ERROR_DIR.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        dest = INBOX_DIR / p.name
+        try:
+            if dest.exists():
+                dest = INBOX_DIR / f"{p.stem}-{datetime.now().strftime('%Y%m%d_%H%M%S')}{p.suffix}"
+            p.rename(dest)
+            moved += 1
+        except Exception as e:
+            failed.append(f"{p.name}: {e}")
+    return moved, failed
 
 
 def _write_status_prelaunch():
@@ -1506,6 +1548,31 @@ if page == "状态概览":
                 st.rerun()
             else:
                 st.warning(msg)
+        # v2.84：当前批次失败音频一键重新入队并处理（替代手动 SSH 移动）
+        err_audio = []
+        if INBOX_ERROR_DIR.exists():
+            err_audio = [p for p in sorted(INBOX_ERROR_DIR.iterdir())
+                         if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS]
+        if err_audio:
+            names = "、".join(html.escape(p.name) for p in err_audio[:3])
+            if len(err_audio) > 3:
+                names += f" 等 {len(err_audio)} 个"
+            st.markdown(
+                f"<div class='inbox-empty'>error/ 中有失败音频：{names}。"
+                "排查后可一键重新入队处理。</div>", unsafe_allow_html=True)
+            if st.button("↩️ 失败文件重新入队并处理", key="btn_requeue",
+                         use_container_width=True, disabled=busy):
+                moved, failed = requeue_failed_files()
+                if moved:
+                    st.success(f"已移回 {moved} 个失败文件到收件箱，正在启动处理…")
+                    ok, msg = trigger_process_inbox()
+                    if not ok:
+                        st.warning(msg)
+                    time.sleep(1.2)
+                else:
+                    st.warning("没有可重新入队的失败文件"
+                               + (f"（{failed[0]}）" if failed else ""))
+                st.rerun()
 
     c = panel("处理成果", "全部历史累计")
     with c:

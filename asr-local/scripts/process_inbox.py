@@ -120,16 +120,35 @@ def scan_inbox() -> list[Path]:
 
 
 def _acquire_lock() -> bool:
-    """防止重复触发；锁文件超过 6 小时视为陈旧（上次异常退出）"""
+    """防止重复触发；锁文件超过 6 小时或持有 PID 已死视为陈旧
+    （v2.84：崩溃/被杀后可立即接管，无需等 6 小时）"""
     try:
-        if LOCK_PATH.exists():
-            age = time.time() - LOCK_PATH.stat().st_mtime
-            if age < 6 * 3600:
-                return False
+        if LOCK_PATH.exists() and not _lock_is_stale(LOCK_PATH):
+            return False
         LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
         return True
     except Exception:
         return False
+
+
+def _lock_is_stale(path: Path) -> bool:
+    """锁文件陈旧判定：超过 6 小时，或持有 PID 已不存在（崩溃/SIGKILL 等）即视为陈旧。
+    v2.84：PID 存活且确为 process_inbox 进程才算有效锁，否则可立即接管。"""
+    try:
+        if not path.exists():
+            return False
+        if (time.time() - path.stat().st_mtime) >= 6 * 3600:
+            return True
+        pid_txt = path.read_text(encoding="utf-8").strip()
+        if not pid_txt.isdigit():
+            return True
+        with open(f"/proc/{pid_txt}/cmdline", "rb") as f:
+            cmd = f.read().decode("utf-8", errors="ignore")
+        return "process_inbox.py" not in cmd
+    except FileNotFoundError:
+        return True  # 持有进程已不存在 → 陈旧
+    except Exception:
+        return False  # /proc 不可读等异常 → 保守视为运行中
 
 
 def _release_lock():

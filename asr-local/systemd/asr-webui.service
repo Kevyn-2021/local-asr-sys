@@ -11,6 +11,10 @@ Environment=STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 ExecStart=/home/kevin/asr_sys_local/asr-local/.venv/bin/streamlit run /home/kevin/asr_sys_local/asr-local/scripts/webui.py --server.address 0.0.0.0 --server.port 8501 --server.headless true
 Restart=always
 RestartSec=5
+# v2.84：重启/停止服务只终止 webui 主进程，不连坐 webui 启动的 process_inbox.py
+# 子进程（同 cgroup）。2026-08-07 16:05 曾因默认 KillMode=control-group 把运行中
+# 的批处理一起 SIGTERM，导致文件失败入 error/。
+KillMode=process
 StandardOutput=journal
 StandardError=journal
 

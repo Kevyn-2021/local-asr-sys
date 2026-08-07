@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.83  
+**版本**: v2.84  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -505,7 +505,8 @@ def move_to_error(src: Path, reason: str = "") -> None:
 - **两个调用方复用同一函数**（避免逻辑重复）：
   1. `process_inbox.py::_archive_old_errors()` — 每次处理开始前自动归档上一轮错误
   2. `webui.py::prepare_inbox()` — 「准备处理收件箱」按钮，用户手动触发归档 + 解锁
-- **解锁逻辑**：仅当锁文件存在且**非处理中**（陈旧锁 > 6 小时）时删除；正在处理（新鲜锁）保留并提示
+- **解锁逻辑（v2.84 起 PID 感知）**：仅当锁文件存在且**非处理中**（陈旧锁 = 超过 6 小时 **或持有 PID 已死**）时删除/接管；正在处理（PID 存活的新鲜锁）保留并提示——崩溃/被杀后无需再等 6 小时
+- **失败文件重新入队（v2.84）**：收件箱面板新增「↩️ 失败文件重新入队并处理」按钮——把 `error/` 根目录当前批次失败音频移回收件箱并立即启动处理（`.error.txt` 日志留待下轮归档），替代手动 SSH 移动；`error/archived/` 历史归档不在范围内
 
 ---
 
@@ -590,6 +591,7 @@ def move_to_error(src: Path, reason: str = "") -> None:
 - **run.sh 工程根路径 bug（v2.22 修复）**：`PROJ_ROOT` 原用 `$(cd "$SCRIPT_DIR/.." && pwd)` 多退一层——run.sh 位于工程根时 `..` 指向父目录（ThinkPad 上为 `asr_sys_local` 而非 `asr-local`），导致 `.venv`/`.hf_token` 定位错误、run.sh 实际不可用。改为 `$(cd "$SCRIPT_DIR" && pwd)`（run.sh 与工程根同层）。
 - **GitHub 版本管理（v2.22）**：工程已托管至公开仓库 `Kevyn-2021/local-asr-sys`。MacBook 为**唯一 git 源**；`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型权重/`sample_audio`）；**ThinkPad 不纳入 git**（含机密与运行资产），继续由 `deploy_webui.sh` 同步代码，两者各司其职。
 - **部署地址可配置（v2.23）**：ThinkPad 常随网络环境切换地址，`deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<当前IP>` 环境变量覆盖（默认地址本机维护，不随仓库发布）。v2.23 部署验证：平铺重构后开发机与运行节点 **18 个运行时文件 md5 全量一致**，`run.sh` 的 `PROJ_ROOT` 修复在运行节点生效（`/home/kevin/asr_sys_local/asr-local`）。
+- **webui 重启不杀批处理（v2.84）**：`asr-webui.service` 增加 `KillMode=process`——systemd 重启/停止服务只终止 webui 主进程，不再对同 cgroup 的 `process_inbox.py` 子进程发 SIGTERM（2026-08-07 16:05 实战：v2.83 部署重启把 webui 启动的批处理杀成 Diarization 失败、文件移入 error/）。注意：`deploy_webui.sh` 的 4/5 步会 `systemctl --user restart`，修改单元后必须同步单元文件 + `daemon-reload` 才能生效。
 - **默认路径制造残留目录（v2.21 根治）**：`settings.py` 的默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）只在 `.env` 未加载时生效；而代码里多处 `Path.mkdir(parents=True, exist_ok=True)` 会自动创建这些默认目录——`~/audio_archive`、`~/asr-local/model_cache` 因此各出现过一次并被清理。根源是 CLI 入口（`run.sh`）此前只读 `.hf_token`、不加载 `.env`。v2.21 起 `run.sh` 启动时 `source .env`（`set -a` 导出）并强制注入 `ASR_PROJ_ROOT`，CLI 与 WebUI 共用生产路径。**v2.83 起 db 打开路径被硬拦截**：`connect()` 未设 `ASR_ARCHIVE` 时直接报错（见上文防护条目），不再自动 mkdir 制造 DB 残留；settings 默认值本身保留，其余模块（如收件箱/日志）的 mkdir 仍可能随脚本创建，排查此类残留时看目录名是否为 settings 默认值 + 目录 mtime。
 - **暂存区与生产区漂移**：MacBook 工程根目录（`ASR-Local-Thinkpad/`）是部署源，但 `deploy_webui.sh` 原先只部署 Web 相关文件，CLI 配套（`run_pipeline.py`/`enroll_voiceprint.py`/`step2_download_models.sh`/`run.sh`）未纳入部署，导致暂存区被改动后与 ThinkPad 生产版本漂移（`src.config.settings` 错误导入、`enroll_voiceprint.py` 中文引号 SyntaxError 等）。v2.19 起部署脚本纳入全部运行时（`config/settings.py` 除外），并新增远端 CLI 导入校验。
 - **`config/settings.py` 为设计例外（v2.33 明确；v2.37 修正"入 git"口径）**：settings.py 的特殊之处是**不随 `deploy_webui.sh` 部署**（脚本注释）——ThinkPad 保留自己的生产配置，运行时由 `.env`（`HF_HOME`/`ASR_PROJ_ROOT`/`ASR_ARCHIVE`/`ASR_INBOX` 等）覆盖；但它**纳入 git 版本管理**（不是"不入 git"）。v2.37 起以 **ThinkPad 生产版本为基准**上传（`MODELS_DIR` 默认值统一为 `PROJ_ROOT / "model_cache"`），MacBook 与 ThinkPad **两端文件完全一致**，原"本地 models / 生产 model_cache"的默认值差异不再存在（MacBook 开发机无模型权重、无本地 .env，统一无副作用）。部署脚本不推送 settings.py 属**设计约定**（部署覆盖会冲掉 ThinkPad 上手工调整的配置），而非内容差异。修改 settings.py 后：① 手动 `scp config/settings.py` 同步到 ThinkPad（两端内容相同，无需 sed）；② 提交 git 保持版本管理。
@@ -754,6 +756,7 @@ MEMORY_CONFIG = {
 | v2.81 | 2026-08-07 | **五端一致性 Review（文档工程）**: ① TDD §3.3 匹配机制"三档阈值 0.65/0.50"补 v2.79 学习阈值 0.75，改为"自动 0.65 / 疑似 0.50 / 学习 0.75（认名与学习解耦）"，并指明 `0.65–0.75` 只认名不学习；② 全量运行时文件 md5 复核——26 个文件两端一致（deploy_webui.sh 为 Mac 侧工具按设计不同步）；③ SEC（gitignored）白名单更新为当前 MacBook 办公室地址；交接文档（gitignored）刷新至 v2.80 口径；④ PRD/TDD 版本头与 changelog 核对一致（v1.0→v2.81） |
 | v2.82 | 2026-08-07 | **改回未知清除待重置标记（db.py §1.7 / §3.3 / PRD FR-003-CLUSTER）**: ① `unassign_cluster_name` UPDATE 增加 `reset_on_next_match=0`——改回未知后休眠标记不再让看板「待重置簇」误计未标注簇（v2.80 起按人员看板 + v2.76 重置标记的联动细节）；② 存量数据清理：`UPDATE speaker_clusters SET reset_on_next_match=0 WHERE assigned_name IS NULL`（幂等，unknown_0044 等）；③ 行为验证：标注→置位 / 改回→清零 / 再标注→重新置位 / 命中→重播种，临时库六步通过；④ 部署验证：db.py 两端 md5 一致，服务重启 active + HTTP 200；UI_VERSION 无需改（未动 webui.py） |
 | v2.83 | 2026-08-07 | **未加载 .env 时 connect() 直接报错（db.py §4.8）**: ① `connect()` 判定改为「无显式 `db_path` + 未设 `ASR_ARCHIVE`」即抛 `RuntimeError`（指引 source .env / run.sh / systemd / 显式 db_path），不执行 `ensure_parent_dir`、不创建 `~/audio_archive` 默认路径空库——v2.47 告警实测复发（2026-08-07 11:01 临时查询制造 0 字节空库）后升级；② 行为验证：无 env 调用抛错且不建目录，`source .env` 后正常连接；③ 部署验证：db.py/run.sh 两端 md5 一致，服务重启 active + HTTP 200；UI_VERSION 无需改（未动 webui.py） |
+| v2.84 | 2026-08-07 | **批处理可恢复性 + 一键重新入队（webui.py / process_inbox.py / systemd §3.6 / §4.8 / PRD FR-008-M）**: ① `asr-webui.service` 加 `KillMode=process`——重启服务只杀 webui 主进程，webui 启动的 `process_inbox.py` 不再被 SIGTERM 连坐（2026-08-07 16:05 实战：v2.83 部署重启把运行中批处理杀成 Diarization 失败、文件移入 error/）；② 锁文件 PID 感知——webui `inbox_processing()` 与 `process_inbox._acquire_lock()` 均按「PID 存活且 cmdline 含 process_inbox.py」判定有效锁，否则视为陈旧立即接管（崩溃/SIGKILL 后无需等 6 小时）；③ 新增 `requeue_failed_files()` + 收件箱面板「↩️ 失败文件重新入队并处理」按钮——error/ 当前批次失败音频移回收件箱并启动（.error.txt 留待归档）；④ 行为验证：死 PID 锁立即接管、活 PID 锁拒绝双开、重新入队按钮移动文件并触发处理；⑤ 部署验证：webui.py/process_inbox.py/unit 两端一致，daemon-reload + 服务重启 active + HTTP 200；UI_VERSION 更新（v2.84 部署） |
 
 ---
 
