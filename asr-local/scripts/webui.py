@@ -1576,38 +1576,78 @@ elif page == "数据库":
         persons = list_persons()
         known_names = [p["person_name"] for p in persons]
 
-        # 说话人选项：全部声纹簇（未标注/已标注/不标注）+ 无簇的已命名说话人（声纹库匹配）
-        options: list[dict] = []
-        seen_keys: set[str] = set()
+        # 说话人选项（v2.78 优化）：
+        #  - 已标注人员按姓名合并为一行（一个姓名可能对应多个声纹簇，不再重复出现多行）
+        #  - 无发言样本的簇（无法试听确认）默认隐藏，可勾选显示
+        #  - 排序：未标注 unknown（按编号）→ 已标注姓名（按姓名）→ 不标注（按编号）
+        with connect() as conn:
+            sp_utt = {str(r["speaker"]): int(r["c"]) for r in conn.execute(
+                "SELECT speaker, COUNT(*) AS c FROM transcripts GROUP BY speaker")}
+
+        def _cluster_utts(cl: dict) -> int:
+            n = sp_utt.get(str(cl["label"]), 0)
+            if cl.get("assigned_name"):
+                n += sp_utt.get(str(cl["assigned_name"]), 0)
+            return n
+
+        unknown_opts: list[dict] = []
+        named_groups: dict[str, list[dict]] = {}
+        skip_opts: list[dict] = []
+        seen_labels: set[str] = set()
         for cl in clusters:
             label = str(cl["label"])
-            if label in seen_keys:
+            if label in seen_labels:
                 continue
-            seen_keys.add(label)
-            if cl.get("assigned_name"):
-                seen_keys.add(str(cl["assigned_name"]))
-            disp = cl["assigned_name"] or label
-            state = "已标注" if cl.get("assigned_name") else ("🚫 不标注" if cl.get("skip_label") else "（未标注）")
-            options.append({
-                "disp": f"{disp} {state}",
-                "raws": [label] + ([str(cl["assigned_name"])] if cl.get("assigned_name") else []),
-                "clusters": [cl],
-            })
+            seen_labels.add(label)
+            name = cl.get("assigned_name")
+            if name:
+                named_groups.setdefault(str(name), []).append(cl)
+            elif cl.get("skip_label"):
+                skip_opts.append({"disp": f"{label} 🚫 不标注", "raws": [label], "clusters": [cl]})
+            else:
+                unknown_opts.append({"disp": f"{label}（未标注）", "raws": [label], "clusters": [cl]})
+
+        show_empty = st.checkbox(
+            "显示无发言样本的说话人", value=False,
+            help="无发言样本的簇无法试听确认，默认隐藏；勾选后可一并显示（供清理/改名等操作）",
+            key="clu_show_empty")
+
+        def _keep(opt: dict) -> bool:
+            return show_empty or any(_cluster_utts(c) > 0 for c in opt["clusters"])
+
+        named_opts = [
+            {"disp": f"{name} 已标注",
+             "raws": [str(name)] + [str(c["label"]) for c in cls],
+             "clusters": cls}
+            for name, cls in sorted(named_groups.items(), key=lambda kv: kv[0])
+        ]
+        options = [o for o in unknown_opts if _keep(o)] \
+                + [o for o in named_opts if _keep(o)] \
+                + [o for o in skip_opts if _keep(o)]
+        hidden_n = sum(1 for o in unknown_opts + named_opts + skip_opts if not _keep(o))
+        if hidden_n:
+            st.caption(f"已隐藏 {hidden_n} 个无发言样本的说话人（勾选上方可显示）")
+
+        # 无簇的已命名说话人（声纹库匹配，v2.68 起保留）
+        seen_names = {str(c["label"]) for c in clusters} | {str(n) for n in named_groups}
         for s in get_speaker_list():
-            if s in seen_keys:
+            if s in seen_names:
                 continue
-            seen_keys.add(s)
+            seen_names.add(s)
             options.append({"disp": f"{disp_speaker(s, sp_map)}（声纹库命名）",
                             "raws": [s], "clusters": []})
 
         if not options:
-            st.markdown(
-                "<div style='font-size:0.95rem;color:var(--fg-2);'>"
-                "还没有任何说话人。处理音频后，未识别说话人会以 "
-                "<code>unknown_0001</code>、<code>unknown_0002</code>… 的形式出现在这里。"
-                "</div>",
-                unsafe_allow_html=True,
-            )
+            if clusters and not show_empty:
+                st.info("所有说话人都没有发言样本（已隐藏）。勾选「显示无发言样本的说话人」可查看。")
+            else:
+                st.markdown(
+                    "<div style='font-size:0.95rem;color:var(--fg-2);'>"
+                    "还没有任何说话人。处理音频后，未识别说话人会以 "
+                    "<code>unknown_0001</code>、<code>unknown_0002</code>… 的形式出现在这里。"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
         else:
             opt_disps = [o["disp"] for o in options]
             sel_disp = st.selectbox("说话人", opt_disps, key="clu_sp_filter")
@@ -1659,73 +1699,92 @@ elif page == "数据库":
             if not sel["clusters"]:
                 st.info("该说话人来自已命名声纹库，无需标注。")
             else:
-                for cl in sel["clusters"]:
-                    cid = cl["cluster_id"]
-                    label = str(cl["label"])
-                    assigned = cl.get("assigned_name")
-                    skipped = bool(cl.get("skip_label"))
+                cls = sel["clusters"]
+                group_note = ""
+                if len(cls) > 1:
+                    group_note = (f"（对应 {len(cls)} 个声纹簇："
+                                  + "、".join(html.escape(str(c["label"])) for c in cls)
+                                  + "；标注/改回将作用于全部同名簇）")
+                if cls[0].get("assigned_name"):
+                    assigned = str(cls[0]["assigned_name"])
                     st.markdown(
-                        f"<div style='font-size:0.9rem;'><strong>标注 {html.escape(label)}"
-                        f"{' → ' + html.escape(str(assigned)) if assigned else ''}</strong></div>",
+                        f"<div style='font-size:0.9rem;'><strong>标注 {html.escape(assigned)}"
+                        f"{group_note}</strong></div>",
                         unsafe_allow_html=True,
                     )
-                    if assigned:
-                        others = [n for n in known_names if n != assigned]
+                    others = [n for n in known_names if n != assigned]
+                    name_choice = st.selectbox(
+                        "改标为", ["（输入新姓名）"] + others, key="cal_name_grp")
+                    new_name = ""
+                    if name_choice == "（输入新姓名）":
+                        new_name = st.text_input("新姓名（唯一，不含空格）", key="cal_new_grp")
+                    target = new_name.strip() if name_choice == "（输入新姓名）" else name_choice
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if st.button("改标并回填", key="btn_reassign_grp"):
+                            if not target or " " in target:
+                                st.warning("请输入不含空格的姓名")
+                            else:
+                                tot_db = tot_txt = 0
+                                for cl in cls:
+                                    d, t = apply_cluster_label(cl["cluster_id"], target)
+                                    tot_db += d
+                                    tot_txt += t
+                                st.success(f"已把 {assigned} 改标为 {target}（{len(cls)} 个簇），"
+                                           f"更新 {tot_db} 条转录、{tot_txt} 个文本备份。")
+                                st.rerun()
+                    with col_b:
+                        if st.button("改回未知", key="btn_unassign_grp"):
+                            st.session_state["unassign_grp"] = True
+                    if st.session_state.get("unassign_grp"):
+                        st.warning(f"确认把「{assigned}」改回未知？将作用于 {len(cls)} 个簇，"
+                                   f"并把转录与文本备份中的 {assigned} 改回编号。")
+                        if st.button("确认改回", key="btn_unassign_ok_grp"):
+                            tot_db = tot_txt = 0
+                            for cl in cls:
+                                d, t = apply_cluster_label(cl["cluster_id"], None)
+                                tot_db += d
+                                tot_txt += t
+                            st.success(f"已改回未知（{len(cls)} 个簇，"
+                                       f"更新 {tot_db} 条转录、{tot_txt} 个文本备份）。")
+                            st.session_state.pop("unassign_grp", None)
+                            st.rerun()
+                else:
+                    cl = cls[0]
+                    cid = cl["cluster_id"]
+                    label = str(cl["label"])
+                    skipped = bool(cl.get("skip_label"))
+                    st.markdown(
+                        f"<div style='font-size:0.9rem;'><strong>标注 {html.escape(label)}</strong></div>",
+                        unsafe_allow_html=True,
+                    )
+                    if skipped:
+                        if st.button("↩️ 恢复标注", key=f"btn_unskip_{cid}"):
+                            set_cluster_skip(cid, False)
+                            st.success(f"已恢复 {label} 的标注入口。")
+                            st.rerun()
+                    else:
                         name_choice = st.selectbox(
-                            "改标为", ["（输入新姓名）"] + others, key=f"cal_name_{cid}")
+                            "标注为", ["（输入新姓名）"] + known_names, key=f"cal_name_{cid}")
                         new_name = ""
                         if name_choice == "（输入新姓名）":
                             new_name = st.text_input("新姓名（唯一，不含空格）", key=f"cal_new_{cid}")
                         target = new_name.strip() if name_choice == "（输入新姓名）" else name_choice
                         col_a, col_b = st.columns(2)
                         with col_a:
-                            if st.button("改标并回填", key=f"btn_reassign_{cid}"):
+                            if st.button("标注并回填", key=f"btn_assign_{cid}"):
                                 if not target or " " in target:
                                     st.warning("请输入不含空格的姓名")
                                 else:
                                     n_db, n_txt = apply_cluster_label(cid, target)
-                                    st.success(f"已把 {label} 从 {assigned} 改标为 {target}，"
+                                    st.success(f"已把 {label} 标注为 {target}，系统会持续学习该声纹；"
                                                f"更新 {n_db} 条转录、{n_txt} 个文本备份。")
                                     st.rerun()
                         with col_b:
-                            if st.button(f"改回未知（编号 {label}）", key=f"btn_unassign_{cid}"):
-                                st.session_state[f"unassign_{cid}"] = True
-                        if st.session_state.get(f"unassign_{cid}"):
-                            st.warning(f"确认把「{label} → {assigned}」改回未知？"
-                                       f"将把转录与文本备份中的 {assigned} 改回 {label}。")
-                            if st.button("确认改回", key=f"btn_unassign_ok_{cid}"):
-                                n_db, n_txt = apply_cluster_label(cid, None)
-                                st.success(f"已改回未知：{label}（更新 {n_db} 条转录、{n_txt} 个文本备份）。")
-                                st.session_state.pop(f"unassign_{cid}", None)
+                            if st.button("🚫 设为不标注", key=f"btn_skip_{cid}"):
+                                set_cluster_skip(cid, True)
+                                st.success(f"已把 {label} 设为不标注（保持原编号）。")
                                 st.rerun()
-                    else:
-                        if skipped:
-                            if st.button("↩️ 恢复标注", key=f"btn_unskip_{cid}"):
-                                set_cluster_skip(cid, False)
-                                st.success(f"已恢复 {label} 的标注入口。")
-                                st.rerun()
-                        else:
-                            name_choice = st.selectbox(
-                                "标注为", ["（输入新姓名）"] + known_names, key=f"cal_name_{cid}")
-                            new_name = ""
-                            if name_choice == "（输入新姓名）":
-                                new_name = st.text_input("新姓名（唯一，不含空格）", key=f"cal_new_{cid}")
-                            target = new_name.strip() if name_choice == "（输入新姓名）" else name_choice
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                if st.button("标注并回填", key=f"btn_assign_{cid}"):
-                                    if not target or " " in target:
-                                        st.warning("请输入不含空格的姓名")
-                                    else:
-                                        n_db, n_txt = apply_cluster_label(cid, target)
-                                        st.success(f"已把 {label} 标注为 {target}，系统会持续学习该声纹；"
-                                                   f"更新 {n_db} 条转录、{n_txt} 个文本备份。")
-                                        st.rerun()
-                            with col_b:
-                                if st.button("🚫 设为不标注", key=f"btn_skip_{cid}"):
-                                    set_cluster_skip(cid, True)
-                                    st.success(f"已把 {label} 设为不标注（保持原编号）。")
-                                    st.rerun()
 
 
     # ── 人物档案（需求 4)：姓名/性别/出生年/关系/备注 ──
