@@ -323,10 +323,13 @@ def assign_cluster_name(cluster_id: int, person_name: str,
 
 def unassign_cluster_name(cluster_id: int, db_path: Path | None = None) -> None:
     """标注校准（v2.20）：把已标注的簇改回未知——清空 assigned_name，编号（label）保留。
-    该编号是簇的稳定身份，改回后仍以此编号在 WebUI 未标注列表中出现，可随时再标注。"""
+    该编号是簇的稳定身份，改回后仍以此编号在 WebUI 未标注列表中出现，可随时再标注。
+    v2.82：同时清除 reset_on_next_match（休眠的待重置标记）——未标注簇不参与学习/重置，
+    看板「待重置簇」只反映已标注且待重置的簇；再次标注时 assign_cluster_name 会按
+    sample_count 规则重新置位，行为不受影响。"""
     with connect(db_path) as conn:
         conn.execute(
-            "UPDATE speaker_clusters SET assigned_name=NULL, "
+            "UPDATE speaker_clusters SET assigned_name=NULL, reset_on_next_match=0, "
             "updated_at=CURRENT_TIMESTAMP WHERE cluster_id=?",
             (cluster_id,))
 
