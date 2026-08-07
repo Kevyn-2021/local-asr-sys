@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.76  
+**版本**: v2.77  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -189,7 +189,8 @@ def apply_cluster_label(cluster_id, target):
 - **发言列表**：`get_speaker_utterances(raws, limit=100)` 按 `speaker IN (label[, assigned_name])` 查询，绝对时间倒序
 - **「🎧 试听发言」**（v2.69）：下拉按「时间 + 文字预览」选一条，`render_segment_audio()` 按 `segment_start_offset/end_offset` 从 `audio_path` 切段播放（内部以 `transcripts.id` 为键，不展示）
 - **标注操作区**（按簇渲染）：未标注 →「标注并回填」+「🚫 设为不标注」；已标注 →「改标并回填」+「改回未知（沿用编号 {label}）」；不标注中 →「↩️ 恢复标注」；改回未知为**两步确认**（`st.session_state[f"unassign_{cluster_id}"]`），操作统一走 `apply_cluster_label()` 与 `set_cluster_skip()`
-- **不标注语义（v2.43）**：`skip_label=1` 是独立于标注的标记——不写 `assigned_name`、不改 `label`/`embedding`，**不触发任何 transcripts 回填**（编号未变）；匹配层（`voiceprint.py`）照常加载并学习该簇（`load_all_clusters` 仍返回全部簇）；不标注簇在说话人下拉显示「🚫 不标注」且标注入口隐藏，恢复标注即 `set_cluster_skip(cid, False)`、入口重新出现（标注→改回→再标注仍全程可逆）
+- **改标即重置（v2.76）**：`apply_cluster_label` 的标注/改标分支统一走 `assign_cluster_name()`——"改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置 `reset_on_next_match=1`，下次处理命中时重置向量（实现见 §3.3）
+- **不标注语义（v2.43 / v2.75 修正）**：`skip_label=1` 是独立于标注的标记——不写 `assigned_name`、不改 `label`/`embedding`，**不触发任何 transcripts 回填**（编号未变）；匹配层（`voiceprint.py`）照常参与匹配（`load_all_clusters` 仍返回全部簇、沿用编号）但 **v2.75 起不参与向量学习**（与纯 unknown 一致）；不标注簇在说话人下拉显示「🚫 不标注」且标注入口隐藏，恢复标注即 `set_cluster_skip(cid, False)`、入口重新出现（标注→改回→再标注仍全程可逆）
 
 ---
 
@@ -374,9 +375,11 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
 
 声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_local_asr_system.md#fr-003-cluster-声纹簇持久化与标注学习)。
 
-- **向量学习策略（v2.75）**：`match_speaker` 命中声纹簇且 `score >= 0.65` 时，**仅当簇已标注（`assigned_name` 非空）才调用 `_learn_into_cluster` 做增量平均**；纯 unknown / 已取消标注 / skip_label（不标注）簇只返回编号、不更新向量。原因：低质量音源（16kHz 但 32kbps mp3 实测）分离/嵌入不准，3 个说话人会被并成一个簇，若照常学习会把多人向量平均进同一簇造成污染（v2.74 实测 unknown_0044 被 1.5h 低码率音频污染 1 次）。用户标注后该簇重新进入学习。
-- **改标即重置（v2.76）**：`speaker_clusters` 新增 `reset_on_next_match` 列（老库 ALTER 迁移）。`assign_cluster_name` 在"原已标注且改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置位；`match_speaker` 命中待重置的已标注簇时直接 `reset_cluster_vector`（embedding 替换、`sample_count=1`、清标记），否则走 v2.75 的增量学习。纯新建簇（`sample_count=1`）首次标注不重置，保留该文件作为身份依据。原因：改标前旧姓名期间累积的样本无法逐条撤销，不重置就只能靠稀释，混合向量会持续带偏匹配、越用越不准。
-- **无发言样本的声纹簇（v2.75 记录）**：簇在声纹匹配阶段创建（`register_new_cluster` 立即持久化），早于 ASR 转录入库；转录未产出行（ASR 无文本 / 文件失败 / 批次中断）时该簇无关联 transcript → WebUI「声纹簇·标注学习」中显示 0 条发言、无音频可试听（如 unknown_0046，created_at 后无片段）。身份追踪与转录成功解耦属预期，不影响匹配；若干扰可后续增加"清理无样本簇"运维功能。
+#### 标注学习与向量更新（v2.75/v2.76 定稿，用户视角场景表见 [PRD FR-003-CLUSTER](./PRD_local_asr_system.md#fr-003-cluster-声纹簇持久化与标注学习)）
+- **只学已标注簇（v2.75）**：`match_speaker` 命中声纹簇且 `score >= 0.65` 时，**仅当簇已标注（`assigned_name` 非空）才调用 `_learn_into_cluster` 做增量平均**（`new_vec = (旧vec×n + 新vec)/(n+1)`，`sample_count+1`）；纯 unknown / 已取消标注 / skip_label（不标注）簇只返回编号、不更新向量。原因：低质量音源（16kHz 但 32kbps mp3 实测）分离/嵌入不准，3 个说话人会被并成一个簇，若照常学习会把多人向量平均进同一簇造成污染（v2.74 实测 unknown_0044 被 1.5h 低码率音频污染 1 次）。用户标注后该簇重新进入学习。
+- **改标即重置（v2.76）**：`speaker_clusters` 新增 `reset_on_next_match INTEGER DEFAULT 0`（SCHEMA_SQL + `init_db()` 老库 ALTER 迁移），`load_all_clusters()` 读取该字段。`assign_cluster_name()` 在"原已标注且改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置位（同名重指派不重置）；`match_speaker` 命中带标记的已标注簇时调 `reset_cluster_vector()`——embedding **直接替换**、`sample_count=1`、清标记——否则走 v2.75 增量学习。纯新建簇（`sample_count=1`）首次标注不重置，保留该文件作为身份依据。原因：改标前旧姓名期间累积的样本无法逐条撤销，不重置就只能靠稀释，混合向量会持续带偏匹配、越用越不准。
+- **无发言样本的声纹簇（v2.75 记录）**：簇在声纹匹配阶段创建（`register_new_cluster` 立即持久化），早于 ASR 转录入库；转录未产出行（ASR 无文本 / 文件失败 / 批次中断）时该簇无关联 transcript → WebUI「声纹簇·标注学习」中显示 0 条发言、无音频可试听（如 unknown_0046）。身份追踪与转录成功解耦属预期，不影响匹配；若干扰可后续增加"清理无样本簇"运维功能。
+- **行为测试（v2.76 通过，临时库）**：① 新建簇首次标注 → 不重置；② 改标为他人 → 置位；③ 同名重指派 → 不置位；④ 累积簇（`sample_count>1`）标注 → 置位；⑤ 命中待重置簇 → 向量替换、`sample_count=1`、清标记、不学习；⑥ 下次命中 → 恢复正常增量学习（`sample_count=2`）。
 
 ### 3.4 ASR — Qwen3-ASR-1.7B
 
@@ -741,6 +744,7 @@ MEMORY_CONFIG = {
 | v2.74 | 2026-08-07 | **文件名全紧凑时间格式 + FTS 索引修复（settings.py / fts.py / 数据修正）**: ① `FILENAME_TIME_PATTERNS` 新增第 4 条全紧凑式 `YYYYMMDDHHMMSS`（14 位无分隔，`(?<!\d)`/`(?!\d)` 边界，如 `Note-20260806152345`）——v2.74 前此类文件名无法解析、回退到文件创建时间，实测把 2026-08-06 15:23:45 的录音识别为 22:44:15；② **修复 `src/fts.py::sync_segments`**——原实现按 `(file_hash, text)` 反查 id 取最新一条，同文件两条相同文本命中同一 id，第二次 `INSERT INTO transcripts_fts2(rowid, ...)` 触发 FTS5 rowid 唯一约束抛 `constraint failed`（仅告警、转录成功但该文件索引缺行，中文搜索漏匹配）；改为按 `file_hash` 取最新 `len(rows)` 个 id 与插入行一一对应 + `INSERT OR REPLACE` 幂等；③ **存量数据修正**（仅最后处理的 `Note-20260806152345.mp3`）：录音开始时间 22:44:15 → 15:23:45，归档音频/文本/JSON 文件名、数据库 `recording_start_time`/`absolute_*_time`/`archive_name`/`audio_path`/`transcript_path` 及 WebUI 源音频开始/结束时间同步修正，`transcripts_fts2` 全量重建；④ 部署验证：settings.py 与 fts.py 两端 md5 一致 |
 | v2.75 | 2026-08-07 | **声纹向量学习限定为已标注簇（voiceprint.py §3.3 / PRD FR-003-CLUSTER）**: ① `match_speaker` 命中簇且 `score >= 0.65` 时，仅对 `assigned_name` 非空的簇调用 `_learn_into_cluster`；纯 unknown / 取消标注 / skip_label 簇只沿用编号、不更新向量（v2.74 实测：16kHz/32kbps 低码率音频 3 个说话人并成 1 簇、污染 unknown_0044 一次）；② 记录"无样本簇"机制（声纹匹配阶段即建簇、ASR 无文本或文件失败时簇无 transcript 片段，标注队列显示 0 条发言无音频，属预期，如 unknown_0046）；③ 部署验证：voiceprint.py 两端 md5 一致 |
 | v2.76 | 2026-08-07 | **改标即重置声纹向量（db.py / voiceprint.py §3.3 / PRD FR-003-CLUSTER）**: ① `speaker_clusters` 新增 `reset_on_next_match INTEGER DEFAULT 0` 列（含老库 ALTER 迁移），`load_all_clusters` 同步读取；② `assign_cluster_name` 在"原已标注且改标为他人"或"给 `sample_count>1` 的簇指派姓名"时置 `reset_on_next_match=1`（同名重指派不重置；纯新建簇 `sample_count=1` 首次标注不重置）；③ `match_speaker` 命中待重置的已标注簇时调用 `reset_cluster_vector`（embedding 替换、`sample_count=1`、清标记），否则按 v2.75 增量学习；④ 部署验证：db.py / voiceprint.py 两端 md5 一致，行为测试通过（改标→命中→重置→再命中→正常学习） |
+| v2.77 | 2026-08-07 | **标注学习文档落位 + 冲突修正（TDD §1.7 / §3.3 / PRD FR-003-CLUSTER）**: ① §3.3 三条零散记录（v2.75 学习策略 / v2.76 改标重置 / 无样本簇）合并为「标注学习与向量更新」小节，补齐增量平均公式、重置规则与 v2.76 六步行为测试结果；② §1.7「不标注语义」修正——v2.43 原文"照常参与匹配学习"与 v2.75 冲突，改为"照常参与匹配（沿用编号）但不参与向量学习"，并补「改标即重置」实现要点；③ 五端协同：本版仅文档改动，代码保持 v2.76 已同步状态（db.py / voiceprint.py 两端 md5 一致，无需部署） |
 
 ---
 
