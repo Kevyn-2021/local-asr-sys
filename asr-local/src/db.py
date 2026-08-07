@@ -7,7 +7,6 @@ from __future__ import annotations
 import re
 import sqlite3
 import os
-import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -141,16 +140,15 @@ def ensure_parent_dir(path: Path) -> None:
 @contextmanager
 def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     p = Path(db_path or DB_PATH)
-    # v2.47 防护：未加载 .env 时 settings 走默认路径（HOME/audio_archive 等），
-    # connect/init_db 会在 HOME 下制造残留目录（v2.21 问题复发：曾出现
-    # /home/kevin/audio_archive 0 字节空库）。仅在"无显式 db_path + 默认路径 +
-    # 未设置 ASR_ARCHIVE"时向 stderr 告警，帮助定位而非静默制造残留。
-    if db_path is None and not os.environ.get("ASR_ARCHIVE") \
-            and p.parent == Path.home() / "audio_archive":
-        print(
-            f"[db] 警告：未检测到 ASR_ARCHIVE，正在使用默认路径 {p} —— "
-            "请先 source .env（run.sh / systemd 已自动加载），否则会制造 "
-            "~/audio_archive 残留目录", file=sys.stderr)
+    # v2.83 防护：未加载 .env 时 settings 走默认路径（HOME/audio_archive 等），
+    # 若照常创建会在 HOME 下制造 0 字节空库残留（v2.47 曾只告警，2026-08-07 实测
+    # 复发：临时查询未 source .env → /home/kevin/audio_archive/transcripts.db）。
+    # 漏加载 .env 的进程不应读写任何数据库，现改为直接报错拒绝（硬失败）。
+    if db_path is None and not os.environ.get("ASR_ARCHIVE"):
+        raise RuntimeError(
+            "[db] 未检测到 ASR_ARCHIVE（未加载 .env），拒绝打开默认路径数据库 "
+            f"{p}。请通过 run.sh / systemd 启动（会自动 source .env），或先手动 "
+            "source <工程根>/.env；确需绕过时可显式传 db_path。")
     ensure_parent_dir(p)
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row

@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.82  
+**版本**: v2.83  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -556,7 +556,7 @@ def move_to_error(src: Path, reason: str = "") -> None:
   ```
   **坑（v2.46）**：3.1 管线离线加载依赖 `speaker-diarization-community-1`（PLDA），曾因"看名字像没用"误删导致离线加载失败（`OfflineModeIsEnabled` 拉取 `plda/xvec_transform.npz`），已恢复。**核对/删除模型目录必须以实际离线加载（`HF_HUB_OFFLINE=1` 跑 pipeline）为准，不能只凭目录名判断**。step2 旧版下载的松散目录（`pyannote-speaker-diarization-3.1` 等）运行时并不读取（PyAnnote 4.x 走 hub 缓存），纯冗余。
 - **本地代理（open_proxy）**：开启/关闭/状态命令、内核位置、端口与环境变量口径属敏感信息，在本机另行维护、不随仓库发布。**脚本化/无 sudo 场景**：优先 `HF_ENDPOINT=https://hf-mirror.com` 或开发机中转；代理已开启的 shell 中设置 `HTTPS_PROXY` 指向本地代理端口即可让下载走代理。
-- **默认路径残留目录防护（v2.47）**：`db.py::connect()` 增加告警——未设 `ASR_ARCHIVE` 且目标为默认 `~/audio_archive/transcripts.db` 时向 stderr 打印提示（v2.21 问题的复发防护）。曾出现 `/home/kevin/audio_archive`（0 字节空库，2026-08-04 21:07）残留，正确路径 `/home/kevin/asr_sys_local/audio_archive` 不受影响；已清理并确认无其他默认路径残留。
+- **默认路径残留目录防护（v2.47 → v2.83 升级为硬拒绝）**：`db.py::connect()` 在「无显式 `db_path` + 未设 `ASR_ARCHIVE`」时**直接抛 `RuntimeError`**，不执行 `ensure_parent_dir`、不创建默认路径——v2.47 只打 stderr 告警仍复发（2026-08-07 11:01 临时查询未 source .env 再次制造 `/home/kevin/audio_archive` 0 字节空库，已清理），升级为硬失败；正确路径 `/home/kevin/asr_sys_local/audio_archive` 不受影响。需要临时查询请先 `source <工程根>/.env`，或显式传 `db_path`。
 
 ### 4.7 WebUI 样式踩坑
 - **CSS 选择器精准命中**：面板底部留白的选择器必须精准命中单个面板（`stVerticalBlock:has(> [data-testid="stElementContainer"] .panel-head)`）。先用 `stVerticalBlockBorderWrapper`（当前版本不存在，样式整体失效），再试 `stVerticalBlock:has(.panel-head)`（误命中祖先容器，形成"整片大白块"），最终定为现在的精准选择器。
@@ -590,7 +590,7 @@ def move_to_error(src: Path, reason: str = "") -> None:
 - **run.sh 工程根路径 bug（v2.22 修复）**：`PROJ_ROOT` 原用 `$(cd "$SCRIPT_DIR/.." && pwd)` 多退一层——run.sh 位于工程根时 `..` 指向父目录（ThinkPad 上为 `asr_sys_local` 而非 `asr-local`），导致 `.venv`/`.hf_token` 定位错误、run.sh 实际不可用。改为 `$(cd "$SCRIPT_DIR" && pwd)`（run.sh 与工程根同层）。
 - **GitHub 版本管理（v2.22）**：工程已托管至公开仓库 `Kevyn-2021/local-asr-sys`。MacBook 为**唯一 git 源**；`.gitignore` 排除机密（`.env`/`.hf_token`）与个人数据（音频/数据库/模型权重/`sample_audio`）；**ThinkPad 不纳入 git**（含机密与运行资产），继续由 `deploy_webui.sh` 同步代码，两者各司其职。
 - **部署地址可配置（v2.23）**：ThinkPad 常随网络环境切换地址，`deploy_webui.sh` 的 `REMOTE_HOST` 支持 `ASR_REMOTE_HOST=kevin@<当前IP>` 环境变量覆盖（默认地址本机维护，不随仓库发布）。v2.23 部署验证：平铺重构后开发机与运行节点 **18 个运行时文件 md5 全量一致**，`run.sh` 的 `PROJ_ROOT` 修复在运行节点生效（`/home/kevin/asr_sys_local/asr-local`）。
-- **默认路径制造残留目录（v2.21 根治）**：`settings.py` 的默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）只在 `.env` 未加载时生效；而代码里多处 `Path.mkdir(parents=True, exist_ok=True)` 会自动创建这些默认目录——`~/audio_archive`、`~/asr-local/model_cache` 因此各出现过一次并被清理。根源是 CLI 入口（`run.sh`）此前只读 `.hf_token`、不加载 `.env`。v2.21 起 `run.sh` 启动时 `source .env`（`set -a` 导出）并强制注入 `ASR_PROJ_ROOT`，CLI 与 WebUI 共用生产路径。**排查此类残留时看目录名是否为 settings 默认值 + 目录 mtime**。
+- **默认路径制造残留目录（v2.21 根治）**：`settings.py` 的默认值（`PROJ_ROOT=~/asr-local`、`ARCHIVE_DIR=~/audio_archive`、`MODELS_DIR=model_cache`）只在 `.env` 未加载时生效；而代码里多处 `Path.mkdir(parents=True, exist_ok=True)` 会自动创建这些默认目录——`~/audio_archive`、`~/asr-local/model_cache` 因此各出现过一次并被清理。根源是 CLI 入口（`run.sh`）此前只读 `.hf_token`、不加载 `.env`。v2.21 起 `run.sh` 启动时 `source .env`（`set -a` 导出）并强制注入 `ASR_PROJ_ROOT`，CLI 与 WebUI 共用生产路径。**v2.83 起 db 打开路径被硬拦截**：`connect()` 未设 `ASR_ARCHIVE` 时直接报错（见上文防护条目），不再自动 mkdir 制造 DB 残留；settings 默认值本身保留，其余模块（如收件箱/日志）的 mkdir 仍可能随脚本创建，排查此类残留时看目录名是否为 settings 默认值 + 目录 mtime。
 - **暂存区与生产区漂移**：MacBook 工程根目录（`ASR-Local-Thinkpad/`）是部署源，但 `deploy_webui.sh` 原先只部署 Web 相关文件，CLI 配套（`run_pipeline.py`/`enroll_voiceprint.py`/`step2_download_models.sh`/`run.sh`）未纳入部署，导致暂存区被改动后与 ThinkPad 生产版本漂移（`src.config.settings` 错误导入、`enroll_voiceprint.py` 中文引号 SyntaxError 等）。v2.19 起部署脚本纳入全部运行时（`config/settings.py` 除外），并新增远端 CLI 导入校验。
 - **`config/settings.py` 为设计例外（v2.33 明确；v2.37 修正"入 git"口径）**：settings.py 的特殊之处是**不随 `deploy_webui.sh` 部署**（脚本注释）——ThinkPad 保留自己的生产配置，运行时由 `.env`（`HF_HOME`/`ASR_PROJ_ROOT`/`ASR_ARCHIVE`/`ASR_INBOX` 等）覆盖；但它**纳入 git 版本管理**（不是"不入 git"）。v2.37 起以 **ThinkPad 生产版本为基准**上传（`MODELS_DIR` 默认值统一为 `PROJ_ROOT / "model_cache"`），MacBook 与 ThinkPad **两端文件完全一致**，原"本地 models / 生产 model_cache"的默认值差异不再存在（MacBook 开发机无模型权重、无本地 .env，统一无副作用）。部署脚本不推送 settings.py 属**设计约定**（部署覆盖会冲掉 ThinkPad 上手工调整的配置），而非内容差异。修改 settings.py 后：① 手动 `scp config/settings.py` 同步到 ThinkPad（两端内容相同，无需 sed）；② 提交 git 保持版本管理。
 - **一次性过程稿不进部署源**：`step1_setup.sh` 是初装期一次性脚本，路径停留在旧布局（`~/asr-local`、`~/audio_archive`、`model_cache`），不再匹配当前 `~/asr_sys_local/` + `models/` 布局，v2.19 删除；`systemd/asr-webui.service` 与 `install_services.sh` 的 .env 模板同步对齐生产路径（含"用户级 service 不含 User/Group 行"约束）。
@@ -753,6 +753,7 @@ MEMORY_CONFIG = {
 | v2.80 | 2026-08-07 | **声纹看板按人员展示（webui.py §1.7 / PRD FR-003-CLUSTER、§8.2 页3）**: ① `get_voiceprint_dashboard()` 重写——按已标注人员聚合（姓名 + 全部簇 label）统计片段得分分档（高置信/认名未学习/疑似/未识别/无得分/合计/待重置簇），附（全部）合计行；② 面板改为阈值行 + 按人员主表 + 概况小字（移除总声纹簇表）；③ 修复合计行待重置簇混入字符串导致 st.dataframe Arrow 序列化失败、表格被裁的问题（统一 int）；④ 部署验证：webui.py 两端 md5 一致，服务重启 active，AppTest 数据库页 0 异常、看板 10 行（9 人 + 合计）完整渲染；UI_VERSION 2026-08-07-13:35:07 |
 | v2.81 | 2026-08-07 | **五端一致性 Review（文档工程）**: ① TDD §3.3 匹配机制"三档阈值 0.65/0.50"补 v2.79 学习阈值 0.75，改为"自动 0.65 / 疑似 0.50 / 学习 0.75（认名与学习解耦）"，并指明 `0.65–0.75` 只认名不学习；② 全量运行时文件 md5 复核——26 个文件两端一致（deploy_webui.sh 为 Mac 侧工具按设计不同步）；③ SEC（gitignored）白名单更新为当前 MacBook 办公室地址；交接文档（gitignored）刷新至 v2.80 口径；④ PRD/TDD 版本头与 changelog 核对一致（v1.0→v2.81） |
 | v2.82 | 2026-08-07 | **改回未知清除待重置标记（db.py §1.7 / §3.3 / PRD FR-003-CLUSTER）**: ① `unassign_cluster_name` UPDATE 增加 `reset_on_next_match=0`——改回未知后休眠标记不再让看板「待重置簇」误计未标注簇（v2.80 起按人员看板 + v2.76 重置标记的联动细节）；② 存量数据清理：`UPDATE speaker_clusters SET reset_on_next_match=0 WHERE assigned_name IS NULL`（幂等，unknown_0044 等）；③ 行为验证：标注→置位 / 改回→清零 / 再标注→重新置位 / 命中→重播种，临时库六步通过；④ 部署验证：db.py 两端 md5 一致，服务重启 active + HTTP 200；UI_VERSION 无需改（未动 webui.py） |
+| v2.83 | 2026-08-07 | **未加载 .env 时 connect() 直接报错（db.py §4.8）**: ① `connect()` 判定改为「无显式 `db_path` + 未设 `ASR_ARCHIVE`」即抛 `RuntimeError`（指引 source .env / run.sh / systemd / 显式 db_path），不执行 `ensure_parent_dir`、不创建 `~/audio_archive` 默认路径空库——v2.47 告警实测复发（2026-08-07 11:01 临时查询制造 0 字节空库）后升级；② 行为验证：无 env 调用抛错且不建目录，`source .env` 后正常连接；③ 部署验证：db.py/run.sh 两端 md5 一致，服务重启 active + HTTP 200；UI_VERSION 无需改（未动 webui.py） |
 
 ---
 

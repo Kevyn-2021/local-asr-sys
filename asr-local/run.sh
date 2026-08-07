@@ -9,7 +9,8 @@ PY="$VENV/bin/python"
 
 # 加载生产环境变量（.env：HF_TOKEN / ASR_PROJ_ROOT / ASR_ARCHIVE / ASR_INBOX / HF_HOME 等），
 # 使 CLI 与 WebUI 共用同一套生产路径。未加载 .env 时 settings.py 会走默认值
-# （~/asr-local、~/audio_archive、model_cache），在 HOME 下制造残留目录（v2.21 修复）。
+# （~/asr-local、~/audio_archive、model_cache）；v2.83 起 db 连接直接报错拒绝，
+# 不再自动 mkdir 制造残留目录（v2.21 根治 → v2.47 告警仍复发 → v2.83 硬拒绝）。
 ENV_FILE="$PROJ_ROOT/.env"
 if [ -f "$ENV_FILE" ]; then
   set -a
