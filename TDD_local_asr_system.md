@@ -1,6 +1,6 @@
 # 本地音频转录与声纹识别系统 — 技术设计文档 (TDD)
 
-**版本**: v2.74  
+**版本**: v2.75  
 **日期**: 2026-08-06  
 **状态**: 持续更新
 
@@ -374,6 +374,9 @@ PyAnnote Diarization 内部耗时分三段：**segmentation 滑窗**（256ms 步
 
 声纹簇的匹配逻辑、编号规则、标注学习机制见 [PRD FR-003-CLUSTER](./PRD_local_asr_system.md#fr-003-cluster-声纹簇持久化与标注学习)。
 
+- **向量学习策略（v2.75）**：`match_speaker` 命中声纹簇且 `score >= 0.65` 时，**仅当簇已标注（`assigned_name` 非空）才调用 `_learn_into_cluster` 做增量平均**；纯 unknown / 已取消标注 / skip_label（不标注）簇只返回编号、不更新向量。原因：低质量音源（16kHz 但 32kbps mp3 实测）分离/嵌入不准，3 个说话人会被并成一个簇，若照常学习会把多人向量平均进同一簇造成污染（v2.74 实测 unknown_0044 被 1.5h 低码率音频污染 1 次）。用户标注后该簇重新进入学习。
+- **无发言样本的声纹簇（v2.75 记录）**：簇在声纹匹配阶段创建（`register_new_cluster` 立即持久化），早于 ASR 转录入库；转录未产出行（ASR 无文本 / 文件失败 / 批次中断）时该簇无关联 transcript → WebUI「声纹簇·标注学习」中显示 0 条发言、无音频可试听（如 unknown_0046，created_at 后无片段）。身份追踪与转录成功解耦属预期，不影响匹配；若干扰可后续增加"清理无样本簇"运维功能。
+
 ### 3.4 ASR — Qwen3-ASR-1.7B
 
 #### 模型类与调用入口（v2.18 重构）
@@ -735,6 +738,7 @@ MEMORY_CONFIG = {
 | v2.72 | 2026-08-06 | **五端一致性 Review（文档工程 / ThinkPad 同步）**: ① §1.7 UI 描述改写为 v2.68/69 单流程（说话人下拉-发言列表-试听-标注操作区），收敛与 PRD §8.2 页 3 的重复、只留实现要点；「确认标注并回填」按钮名统一为「标注并回填」；§4.7 补 v2.71 白名单水平对齐要点；② **ThinkPad 工程文件全量 md5 比对**——部署脚本 18 个运行时文件 + settings.py 全部一致；systemd/asr-webui.service 与 install_services.sh 存在历史漂移（旧 User/Group 行、旧路径 HF_HOME=asr-local/model_cache、旧 ufw 逻辑、缺白名单参数），已从仓库同步覆盖；/usr/local/sbin/asr-webui-fw.sh 与仓库仅注释措辞差异、行为一致（均读 /etc/asr-webui-fw.conf 的 FIXED_IPS）；deploy_webui.sh 为 Mac 侧工具按设计不同步；③ 版本头部与变更日志两两核对一致（v1.0→v2.72） |
 | v2.73 | 2026-08-06 | **清理 RustDesk 残留目录（ThinkPad 运维）**: ① 复核——`~/rustdesk_remove_20260806/` 仅含 RustDesk 运行日志（约 496KB，tray/password/check-hwcodec-config 等子目录），无进程/无 dpkg 包/无 systemd 服务/无常见残留配置目录/21115-21119 与 3389 端口未监听；② 确认无用后删除该目录，复核通过；③ 五端协同：SEC 与交接文档同步更新（本地维护），PRD/TDD changelog 记录 |
 | v2.74 | 2026-08-07 | **文件名全紧凑时间格式 + FTS 索引修复（settings.py / fts.py / 数据修正）**: ① `FILENAME_TIME_PATTERNS` 新增第 4 条全紧凑式 `YYYYMMDDHHMMSS`（14 位无分隔，`(?<!\d)`/`(?!\d)` 边界，如 `Note-20260806152345`）——v2.74 前此类文件名无法解析、回退到文件创建时间，实测把 2026-08-06 15:23:45 的录音识别为 22:44:15；② **修复 `src/fts.py::sync_segments`**——原实现按 `(file_hash, text)` 反查 id 取最新一条，同文件两条相同文本命中同一 id，第二次 `INSERT INTO transcripts_fts2(rowid, ...)` 触发 FTS5 rowid 唯一约束抛 `constraint failed`（仅告警、转录成功但该文件索引缺行，中文搜索漏匹配）；改为按 `file_hash` 取最新 `len(rows)` 个 id 与插入行一一对应 + `INSERT OR REPLACE` 幂等；③ **存量数据修正**（仅最后处理的 `Note-20260806152345.mp3`）：录音开始时间 22:44:15 → 15:23:45，归档音频/文本/JSON 文件名、数据库 `recording_start_time`/`absolute_*_time`/`archive_name`/`audio_path`/`transcript_path` 及 WebUI 源音频开始/结束时间同步修正，`transcripts_fts2` 全量重建；④ 部署验证：settings.py 与 fts.py 两端 md5 一致 |
+| v2.75 | 2026-08-07 | **声纹向量学习限定为已标注簇（voiceprint.py §3.3 / PRD FR-003-CLUSTER）**: ① `match_speaker` 命中簇且 `score >= 0.65` 时，仅对 `assigned_name` 非空的簇调用 `_learn_into_cluster`；纯 unknown / 取消标注 / skip_label 簇只沿用编号、不更新向量（v2.74 实测：16kHz/32kbps 低码率音频 3 个说话人并成 1 簇、污染 unknown_0044 一次）；② 记录"无样本簇"机制（声纹匹配阶段即建簇、ASR 无文本或文件失败时簇无 transcript 片段，标注队列显示 0 条发言无音频，属预期，如 unknown_0046）；③ 部署验证：voiceprint.py 两端 md5 一致 |
 
 ---
 

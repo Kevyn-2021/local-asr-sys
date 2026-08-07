@@ -128,6 +128,10 @@ class VoiceprintEngine:
         2. 已标注簇（assigned_name 非空）：认出该簇对应的人（持续学习成果）
         3. 纯 unknown 簇：认出是之前出现过的某个 unknown，沿用其全局编号
         都不中则返回 None，由 pipeline 全局递增新建簇。
+
+        v2.75 学习策略：只有已标注的簇（自动认出 = 命中已标注簇 / 手工标注）在命中时
+        才做增量向量学习；纯 unknown / 已取消标注 / skip_label（不标注）的簇只沿用编号、
+        不更新向量——避免低质量音源（低码率致分离/嵌入不准）把多人平均进同一簇造成污染。
         """
         if embedding is None:
             return MatchResult(None, "UNKNOWN", None, False)
@@ -152,7 +156,8 @@ class VoiceprintEngine:
             if s > best_cs:
                 best_cs, best_c = s, c
         if best_c is not None and best_cs >= ta:
-            self._learn_into_cluster(best_c, embedding)  # 顺手学习强化该簇
+            if best_c["assigned_name"]:
+                self._learn_into_cluster(best_c, embedding)  # 仅已标注簇持续学习（v2.75）
             if best_c["assigned_name"]:
                 return MatchResult(best_c["cluster_id"], best_c["assigned_name"], best_cs, False)
             return MatchResult(best_c["cluster_id"], best_c["label"], best_cs, False)
