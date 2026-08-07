@@ -1981,17 +1981,25 @@ elif page == "数据库":
             names = [p["person_name"] for p in persons_now]
             mode = st.radio("操作", ["编辑已有", "新建人物"], horizontal=True, key="person_mode")
             if mode == "编辑已有" and names:
-                pname = st.selectbox("姓名", names, key="edit_pname")
+                c_sel, c_btn = st.columns([3, 1], vertical_alignment="center")
+                with c_sel:
+                    pname = st.selectbox("姓名", names, key="edit_pname")
+                with c_btn:
+                    # v2.89（用户方案）：显式「确定加载」——点击后把当前人物资料直接写入
+                    # 各控件状态，覆盖 Streamlit 跨 rerun 保留的旧值（自动回填/清状态
+                    # 实测仍被旧会话状态盖掉）；控件在本 run 稍后创建，写入立即生效。
+                    if st.button("确定加载", key="btn_load_person", use_container_width=True):
+                        _cur = next((p for p in persons_now if p["person_name"] == pname), {})
+                        st.session_state["edit_new_name"] = _cur.get("person_name") or ""
+                        st.session_state["p_gender"] = _cur.get("gender") or ""
+                        st.session_state["p_birth"] = str(_cur.get("birth_year") or "")
+                        st.session_state["p_relation"] = _cur.get("relation") or ""
+                        st.session_state["p_note"] = _cur.get("note") or ""
                 cur = next((p for p in persons_now if p["person_name"] == pname), {})
-                # v2.88：Streamlit 带 key 控件状态跨 rerun 保留，切换人物后 value 参数
-                # 会被旧会话状态覆盖（曾串成上一个选中人的资料）；人物变化时先清空状态再回填。
-                if st.session_state.get("edit_last_person") != pname:
-                    for _k in ("p_gender", "p_birth", "p_relation", "p_note", "edit_new_name"):
-                        st.session_state.pop(_k, None)
-                    st.session_state["edit_last_person"] = pname
                 target_name = st.text_input(
                     "姓名（可改名，唯一且不含空格；仅改姓名，不会重置已学习声纹）",
                     value=cur.get("person_name") or "", key="edit_new_name")
+                st.caption("选择姓名后点「确定加载」回填资料，再编辑并保存。")
             else:
                 pname = st.text_input("姓名（唯一，不含空格）", key="new_pname2")
                 target_name = pname
