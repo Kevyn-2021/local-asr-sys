@@ -132,6 +132,8 @@ class VoiceprintEngine:
         v2.75 学习策略：只有已标注的簇（自动认出 = 命中已标注簇 / 手工标注）在命中时
         才做增量向量学习；纯 unknown / 已取消标注 / skip_label（不标注）的簇只沿用编号、
         不更新向量——避免低质量音源（低码率致分离/嵌入不准）把多人平均进同一簇造成污染。
+        v2.76 改标即重置：命中带 reset_on_next_match 标记的已标注簇时，直接用当前样本
+        替换向量（sample_count 回 1）并清除标记，重新播种后再恢复增量学习。
         """
         if embedding is None:
             return MatchResult(None, "UNKNOWN", None, False)
@@ -157,7 +159,15 @@ class VoiceprintEngine:
                 best_cs, best_c = s, c
         if best_c is not None and best_cs >= ta:
             if best_c["assigned_name"]:
-                self._learn_into_cluster(best_c, embedding)  # 仅已标注簇持续学习（v2.75）
+                if best_c.get("reset_on_next_match"):
+                    from src.db import reset_cluster_vector
+                    new_vec = embedding.astype(np.float32)
+                    reset_cluster_vector(best_c["cluster_id"], new_vec.tobytes())
+                    best_c["vec"] = new_vec
+                    best_c["sample_count"] = 1
+                    best_c["reset_on_next_match"] = 0
+                else:
+                    self._learn_into_cluster(best_c, embedding)  # 仅已标注簇持续学习（v2.75）
             if best_c["assigned_name"]:
                 return MatchResult(best_c["cluster_id"], best_c["assigned_name"], best_cs, False)
             return MatchResult(best_c["cluster_id"], best_c["label"], best_cs, False)
@@ -184,7 +194,8 @@ class VoiceprintEngine:
         label = next_unknown_label()
         cid = insert_cluster(label, embedding.astype(np.float32).tobytes())
         new_c = {"cluster_id": cid, "label": label, "assigned_name": None, "skip_label": 0,
-                 "sample_count": 1, "vec": embedding.astype(np.float32)}
+                 "sample_count": 1, "reset_on_next_match": 0,
+                 "vec": embedding.astype(np.float32)}
         self._clusters.append(new_c)
         return MatchResult(cid, label, None, False)
 

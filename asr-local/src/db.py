@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS speaker_clusters (
     assigned_name   TEXT,                        -- 用户标注的姓名（关联 persons.person_name）
     skip_label      INTEGER DEFAULT 0,           -- v2.43：1 = 不标注（保持原编号，不参与标注流程）
     sample_count    INTEGER DEFAULT 1,           -- 累积样本数（用于增量平均学习）
+    reset_on_next_match INTEGER DEFAULT 0,       -- v2.76：1 = 改标后待重置，下次命中用新样本替换向量
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -168,6 +169,10 @@ def init_db(db_path: Path | None = None) -> None:
         if "skip_label" not in cols:
             conn.execute(
                 "ALTER TABLE speaker_clusters ADD COLUMN skip_label INTEGER DEFAULT 0")
+        # v2.76 迁移：老库 speaker_clusters 补充改标重置标记列
+        if "reset_on_next_match" not in cols:
+            conn.execute(
+                "ALTER TABLE speaker_clusters ADD COLUMN reset_on_next_match INTEGER DEFAULT 0")
         # v2.67 迁移：老库 transcripts 补充处理起止时间列（pipeline 新写入；旧记录为 NULL，
         # WebUI 展示时完成时间回退 processed_at、开始时间显示 —）
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(transcripts)")}
@@ -249,7 +254,8 @@ def load_all_clusters(db_path: Path | None = None) -> list[dict]:
     out = []
     with connect(db_path) as conn:
         for row in conn.execute(
-                "SELECT cluster_id, label, assigned_name, skip_label, sample_count, embedding "
+                "SELECT cluster_id, label, assigned_name, skip_label, sample_count, "
+                "reset_on_next_match, embedding "
                 "FROM speaker_clusters ORDER BY cluster_id"):
             out.append({
                 "cluster_id": int(row["cluster_id"]),
@@ -257,6 +263,7 @@ def load_all_clusters(db_path: Path | None = None) -> list[dict]:
                 "assigned_name": row["assigned_name"],
                 "skip_label": int(row["skip_label"] or 0),
                 "sample_count": int(row["sample_count"]),
+                "reset_on_next_match": int(row["reset_on_next_match"] or 0),
                 "vec": np.frombuffer(bytes(row["embedding"]), dtype=np.float32),
             })
     return out
@@ -281,14 +288,37 @@ def update_cluster_embedding(cluster_id: int, embedding_bytes: bytes,
             (embedding_bytes, sample_count, cluster_id))
 
 
-def assign_cluster_name(cluster_id: int, person_name: str,
-                        db_path: Path | None = None) -> None:
-    """用户标注：把某个 unknown 簇指派为某人"""
+def reset_cluster_vector(cluster_id: int, embedding_bytes: bytes,
+                         db_path: Path | None = None) -> None:
+    """v2.76 改标重置生效：用当前匹配样本替换簇向量（sample_count 回 1）并清除重置标记"""
     with connect(db_path) as conn:
         conn.execute(
-            "UPDATE speaker_clusters SET assigned_name=?, "
+            "UPDATE speaker_clusters SET embedding=?, sample_count=1, "
+            "reset_on_next_match=0, updated_at=CURRENT_TIMESTAMP WHERE cluster_id=?",
+            (embedding_bytes, cluster_id))
+
+
+def assign_cluster_name(cluster_id: int, person_name: str,
+                        db_path: Path | None = None) -> None:
+    """用户标注/改标：把某个 unknown 簇指派为某人。
+
+    v2.76 改标即重置：当"原已标注且改标为他人"、或"给已累积过样本（sample_count>1，
+    曾命名过或旧版学习过）的簇指派姓名"时，置 reset_on_next_match=1——下次处理命中
+    时用新样本替换向量重新播种，避免旧姓名期间累积的错误样本持续污染、越用越不准；
+    纯新建簇（sample_count=1）首次标注不重置，保留该文件作为身份依据。"""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT assigned_name, sample_count FROM speaker_clusters WHERE cluster_id=?",
+            (cluster_id,)).fetchone()
+        old = row["assigned_name"] if row else None
+        reset = 0
+        if row is not None and person_name != old:
+            if old or (row["sample_count"] or 0) > 1:
+                reset = 1
+        conn.execute(
+            "UPDATE speaker_clusters SET assigned_name=?, reset_on_next_match=?, "
             "updated_at=CURRENT_TIMESTAMP WHERE cluster_id=?",
-            (person_name, cluster_id))
+            (person_name, reset, cluster_id))
 
 
 def unassign_cluster_name(cluster_id: int, db_path: Path | None = None) -> None:
