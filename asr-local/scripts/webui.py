@@ -60,7 +60,7 @@ from src.db import (
 )
 from src.fts import init_fts, search_ids
 
-UI_VERSION = "2026-08-07-13:19:35"
+UI_VERSION = "2026-08-07-13:35:07"
 
 st.set_page_config(page_title="Local ASR System", page_icon="🎙️", layout="wide")
 init_db()  # 幂等：建表 + v2.43 skip_label 老库迁移（pipeline 也会调用）
@@ -708,17 +708,11 @@ def get_audio_segments(file_hash: str) -> list[dict]:
 
 
 def get_voiceprint_dashboard() -> dict:
-    """数据库页底部「声纹匹配 · 学习看板」数据（只读统计，v2.79）。
-    来源：transcripts.speaker_match_score 得分档位分布 + speaker_clusters 概况。"""
+    """数据库页底部「声纹匹配 · 学习看板」数据（只读统计，v2.80 按人展示）。
+    每个已标注人员 = 姓名 + 其全部声纹簇 label，聚合这些片段按 speaker_match_score 分档。"""
     with connect() as conn:
-        bands = [dict(r) for r in conn.execute(
-            "SELECT CASE "
-            " WHEN speaker_match_score IS NULL THEN '无得分' "
-            " WHEN speaker_match_score >= 0.75 THEN '高置信(≥0.75，认名+学习)' "
-            " WHEN speaker_match_score >= 0.65 THEN '认名未学习(0.65-0.75)' "
-            " WHEN speaker_match_score >= 0.50 THEN '疑似(0.50-0.65)' "
-            " ELSE '未识别(<0.50，新建unknown)' END AS band, "
-            " COUNT(*) AS n FROM transcripts GROUP BY band")]
+        sp_scores = [(str(r["speaker"]), r["speaker_match_score"]) for r in conn.execute(
+            "SELECT speaker, speaker_match_score FROM transcripts")]
         sp_utt = {str(r["speaker"]): int(r["c"]) for r in conn.execute(
             "SELECT speaker, COUNT(*) AS c FROM transcripts GROUP BY speaker")}
     clusters = list_clusters_view()
@@ -739,8 +733,40 @@ def get_voiceprint_dashboard() -> dict:
         for c in cls:
             s.add(str(c["label"]))
 
-    def person_utts(name: str) -> int:
-        return sum(sp_utt.get(spk, 0) for spk in label_sets.get(name, set()))
+    BAND_HIGH = "高置信(≥0.75)"
+    BAND_MATCH = "认名未学习(0.65–0.75)"
+    BAND_SUSPECT = "疑似(0.50–0.65)"
+    BAND_LOW = "未识别(<0.50)"
+    BAND_NONE = "无得分"
+
+    def band(score):
+        if score is None:
+            return BAND_NONE
+        if score >= 0.75:
+            return BAND_HIGH
+        if score >= 0.65:
+            return BAND_MATCH
+        if score >= 0.50:
+            return BAND_SUSPECT
+        return BAND_LOW
+
+    persons = []
+    for name, cls in sorted(named.items()):
+        counts = {BAND_HIGH: 0, BAND_MATCH: 0, BAND_SUSPECT: 0, BAND_LOW: 0, BAND_NONE: 0}
+        spks = label_sets[name]
+        for spk, sc in sp_scores:
+            if spk in spks:
+                counts[band(sc)] += 1
+        persons.append({
+            "姓名": name,
+            **counts,
+            "合计": sum(counts.values()),
+            "待重置簇": sum(1 for c in cls if c.get("reset_on_next_match")),
+        })
+
+    total = {BAND_HIGH: 0, BAND_MATCH: 0, BAND_SUSPECT: 0, BAND_LOW: 0, BAND_NONE: 0}
+    for _spk, sc in sp_scores:
+        total[band(sc)] += 1
 
     def cluster_utts(cl: dict) -> int:
         n = sp_utt.get(str(cl["label"]), 0)
@@ -748,24 +774,14 @@ def get_voiceprint_dashboard() -> dict:
             n += sp_utt.get(str(cl["assigned_name"]), 0)
         return n
 
-    persons = [{
-        "姓名": name,
-        "声纹簇数": len(cls),
-        "样本数": sum(int(c.get("sample_count") or 0) for c in cls),
-        "发言数": person_utts(name),
-        "待重置簇": sum(1 for c in cls if c.get("reset_on_next_match")),
-    } for name, cls in sorted(named.items())]
-
     return {
-        "bands": bands,
-        "total_clusters": len(clusters),
+        "persons": persons,
+        "total": total,
         "named_persons": len(named),
-        "named_clusters": sum(len(v) for v in named.values()),
         "unknown": unknown,
         "skip": skip,
         "no_sample": sum(1 for c in clusters if cluster_utts(c) == 0),
         "pending_reset": sum(1 for c in clusters if c.get("reset_on_next_match")),
-        "persons": persons,
     }
 
 
@@ -1928,40 +1944,51 @@ elif page == "数据库":
             for r in get_recent_records(3):
                 st.json(r)
 
-    # ── 声纹匹配 · 学习看板（v2.79：只读统计，不参与标注流程，标注时无需看置信度） ──
-    c = panel("声纹匹配 · 学习看板", "系统自动认名与学习的只读统计；阈值只决定自动认不认/学不学，不改变标注操作")
+    # ── 声纹匹配 · 学习看板（v2.79 起 / v2.80 按人展示：只读统计，不参与标注流程） ──
+    c = panel("声纹匹配 · 学习看板", "按人员展示系统自动认名与学习的只读统计；阈值只决定自动认不认/学不学，不改变标注操作")
     with c:
         ta = float(VOICEPRINT_CONFIG.get("threshold_auto", 0.65))
         tr = float(VOICEPRINT_CONFIG.get("threshold_review", 0.50))
         tl = float(VOICEPRINT_CONFIG.get("learn_threshold", 0.75))
         st.markdown(
-            f"<div style='font-size:0.85rem;color:var(--fg-2);'>"
-            f"当前阈值：自动认名 ≥ {ta} ｜ 疑似 {tr}–{ta} ｜ 学习 ≥ {tl}"
-            f"（v2.79 解耦：{ta}–{tl} 之间只自动认名、不学习，防低置信/低质量样本污染簇向量）</div>",
+            f"<div style='font-size:0.95rem;color:var(--fg-1);margin:2px 0 6px 0;'>"
+            f"认名 ≥ {ta} ｜ 疑似 {tr}–{ta} ｜ 学习 ≥ {tl}"
+            f"<span style='color:var(--fg-2);font-size:0.82rem;'>（v2.79 解耦：{ta}–{tl} 只认名、不学习，防低置信/低质量样本污染）</span></div>",
             unsafe_allow_html=True,
         )
         dash = get_voiceprint_dashboard()
-        if dash["bands"]:
-            st.markdown("**片段匹配得分分布**")
-            b_df = pd.DataFrame(dash["bands"]).rename(
-                columns={"band": "匹配得分档位", "n": "片段数"})
-            st.dataframe(b_df, width='stretch', hide_index=True)
-        else:
-            st.caption("暂无转录片段")
-        st.markdown("**声纹簇概况**")
-        ov = pd.DataFrame([{
-            "总声纹簇": dash["total_clusters"],
-            "已标注人数": dash["named_persons"],
-            "已标注簇": dash["named_clusters"],
-            "未标注": dash["unknown"],
-            "不标注": dash["skip"],
-            "无发言样本": dash["no_sample"],
-            "待重置簇": dash["pending_reset"],
-        }])
-        st.dataframe(ov, width='stretch', hide_index=True)
         if dash["persons"]:
-            st.markdown("**已标注人员明细**")
-            st.dataframe(pd.DataFrame(dash["persons"]), width='stretch', hide_index=True)
+            st.markdown("**按人员 · 片段匹配得分分布**")
+            rows = []
+            for p in dash["persons"]:
+                rows.append({
+                    "姓名": p["姓名"],
+                    "高置信(≥0.75)": p["高置信(≥0.75)"],
+                    "认名未学习(0.65–0.75)": p["认名未学习(0.65–0.75)"],
+                    "疑似(0.50–0.65)": p["疑似(0.50–0.65)"],
+                    "未识别(<0.50)": p["未识别(<0.50)"],
+                    "无得分": p["无得分"],
+                    "合计": p["合计"],
+                    "待重置簇": p["待重置簇"],
+                })
+            t = dash["total"]
+            rows.append({
+                "姓名": "（全部）",
+                "高置信(≥0.75)": t["高置信(≥0.75)"],
+                "认名未学习(0.65–0.75)": t["认名未学习(0.65–0.75)"],
+                "疑似(0.50–0.65)": t["疑似(0.50–0.65)"],
+                "未识别(<0.50)": t["未识别(<0.50)"],
+                "无得分": t["无得分"],
+                "合计": sum(t.values()),
+                "待重置簇": 0,
+            })
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        else:
+            st.caption("暂无已标注人员")
+        st.caption(
+            f"已标注 {dash['named_persons']} 人 ｜ 未标注 unknown {dash['unknown']} ｜ "
+            f"不标注 {dash['skip']} ｜ 无发言样本簇 {dash['no_sample']} ｜ 待重置簇 {dash['pending_reset']}"
+        )
 
 # ================================================================
 # 页 4 — 文件归档
